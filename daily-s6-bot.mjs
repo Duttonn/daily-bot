@@ -54,10 +54,16 @@ const fileEnv = loadEnvFile(ENV_FILE);
 let authData = null;
 if (fs.existsSync(AUTH_FILE)) {
   try {
+    fs.chmodSync(AUTH_FILE, 0o600);
     authData = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
   } catch (e) {
     console.error('Failed to parse auth.json:', e.message);
   }
+}
+if (fs.existsSync(ENV_FILE)) {
+  try {
+    fs.chmodSync(ENV_FILE, 0o600);
+  } catch (_) {}
 }
 
 // Resolve credentials
@@ -109,7 +115,7 @@ const CONFIG = {
   programId: new PublicKey('GeZwYHaw8x1HhvFojhCYwunK9fqRGZL2zwgJecnFZDKx'),
   usdcMint: new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'),
   solanaRpcUrl: process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
-  dailyUsdcAta: 'DXpsZgXTarjRiSdMj3jeHodP2Rzv6x86SFohSiEv2Que',
+  dailyUsdcAta: process.env.DAILY_USDC_ATA || null, // Dynamically resolved on startup from VAULT
   paperMode: isPaperMode,
 
   // S6 Mathematical Strategy (Locked pre-commitment)
@@ -120,7 +126,7 @@ const CONFIG = {
   minEdgeMargin: 0.05,     // Edge margin floor (net of fees)
 
   // Dynamic Capital Sizing
-  sizingFraction: 0.12,        // 12% of live USDC balance per trade
+  sizingFraction: parseFloat(process.env.SIZING_FRACTION || '0.12'), // Default 12% of live USDC balance per trade
   maxSharesSafetyCap: 1000,    // Safety ceiling to absorb Level 1 + Level 2 liquidity depth
   minBalanceFloorRatio: 0.50,  // 50% capital drawdown stop-loss
   minBalanceFloorMinUsd: 5.0   // Absolute minimum floor to allow small wallets to trade
@@ -217,6 +223,7 @@ function fee(p, feeRateBps = 700) {
 function findMaxPriceForEdge(q, minEdge = 0.025, feeRateBps = 700) {
   const targetCost = q - minEdge;
   if (targetCost <= 0.05) return 0.05;
+  if (!feeRateBps || feeRateBps <= 0) return Math.min(0.95, targetCost);
   const k = feeRateBps / 10000.0;
   const a = k;
   const b = -(1.0 + k);
@@ -424,6 +431,40 @@ let authFailed = false;
 let currentUsdcBalance = null;
 let initialDetectedBalance = null;
 let lastBalanceCheck = 0;
+let vaultUsdcAta = CONFIG.dailyUsdcAta;
+
+async function resolveVaultUsdcAta() {
+  if (vaultUsdcAta) return vaultUsdcAta;
+  try {
+    const res = await fetch(CONFIG.solanaRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getTokenAccountsByOwner',
+        params: [
+          VAULT.toBase58(),
+          { mint: CONFIG.usdcMint.toBase58() },
+          { encoding: 'jsonParsed' }
+        ]
+      })
+    }).then(r => r.json());
+    const account = res?.result?.value?.[0];
+    if (account?.pubkey) {
+      vaultUsdcAta = account.pubkey;
+      const initialAmt = account.account?.data?.parsed?.info?.tokenAmount?.uiAmount;
+      if (initialAmt !== undefined && currentUsdcBalance === null) {
+        currentUsdcBalance = initialAmt;
+      }
+      console.log(new Date().toISOString(), `[VAULT USDC ATA RESOLVED] ${vaultUsdcAta} | Solde: ${currentUsdcBalance !== null ? currentUsdcBalance.toFixed(2) : '0.00'}$`);
+      return vaultUsdcAta;
+    }
+  } catch (e) {
+    console.error(new Date().toISOString(), '[VAULT ATA RESOLUTION ERROR]', e.message);
+  }
+  return null;
+}
 
 let isFetchingBalance = false;
 async function updateUsdcBalance() {
@@ -432,6 +473,11 @@ async function updateUsdcBalance() {
   if (isFetchingBalance) return currentUsdcBalance;
   isFetchingBalance = true;
   try {
+    if (!vaultUsdcAta) {
+      await resolveVaultUsdcAta();
+    }
+    if (!vaultUsdcAta) return currentUsdcBalance;
+
     const res = await fetch(CONFIG.solanaRpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -439,7 +485,7 @@ async function updateUsdcBalance() {
         jsonrpc: '2.0',
         id: 1,
         method: 'getTokenAccountBalance',
-        params: [CONFIG.dailyUsdcAta]
+        params: [vaultUsdcAta]
       })
     }).then(r => r.json());
     if (res?.result?.value?.uiAmount !== undefined) {
@@ -447,6 +493,9 @@ async function updateUsdcBalance() {
       if (initialDetectedBalance === null && currentUsdcBalance > 0) {
         initialDetectedBalance = currentUsdcBalance;
         console.log(new Date().toISOString(), `[CAPITAL ACTIF DÉTECTÉ] Solde initial: ${initialDetectedBalance.toFixed(2)}$ | Sizing proportionnel: ${(CONFIG.sizingFraction * 100)}% par trade`);
+      } else if (initialDetectedBalance !== null && currentUsdcBalance > initialDetectedBalance * 1.15) {
+        console.log(new Date().toISOString(), `[DÉPÔT DÉTECTÉ] Solde rehaussé: ${initialDetectedBalance.toFixed(2)}$ -> ${currentUsdcBalance.toFixed(2)}$ | Floor stop-loss ajusté`);
+        initialDetectedBalance = currentUsdcBalance;
       }
       lastBalanceCheck = now;
     }
@@ -603,6 +652,7 @@ function handleDailyMessage(msg) {
           books.set(o.tokenId, {
             bids: o.book.bids || [],
             asks: o.book.asks || [],
+            receivedAtMs: Date.now(),
             ageMs: o.book.ageMs,
             stale: o.book.stale
           });
@@ -614,6 +664,7 @@ function handleDailyMessage(msg) {
     books.set(msg.tokenId, {
       bids: msg.bids || [],
       asks: msg.asks || [],
+      receivedAtMs: Date.now(),
       ageMs: msg.ageMs,
       stale: msg.stale
     });
@@ -685,7 +736,11 @@ function evaluateStrategy() {
   updateUsdcBalance();
 
   // Dynamic Stop-Loss Floor check
-  const dynamicFloor = initialDetectedBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, initialDetectedBalance * CONFIG.minBalanceFloorRatio) : 10.0;
+  const floorRatio = CONFIG.minBalanceFloorRatio;
+  const configuredFloor = process.env.MIN_BALANCE_FLOOR_USD ? parseFloat(process.env.MIN_BALANCE_FLOOR_USD) : null;
+  const dynamicFloor = (configuredFloor !== null && !isNaN(configuredFloor))
+    ? configuredFloor
+    : (initialDetectedBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, initialDetectedBalance * floorRatio) : 10.0);
   if (currentUsdcBalance === null || (now - lastBalanceCheck > 60000) || currentUsdcBalance <= dynamicFloor) {
     return;
   }
@@ -745,8 +800,10 @@ function evaluateStrategy() {
       console.log(new Date().toISOString(), `[SKIP] ${slug}: stale book`);
       continue;
     }
-    if ((book.ageMs && book.ageMs > 3000) || (oppBook.ageMs && oppBook.ageMs > 3000)) {
-      console.log(new Date().toISOString(), `[SKIP] ${slug}: book ageMs > 3s`);
+    const bookAge = book.receivedAtMs ? (now - book.receivedAtMs) : 99999;
+    const oppBookAge = oppBook.receivedAtMs ? (now - oppBook.receivedAtMs) : 99999;
+    if (bookAge > 3000 || oppBookAge > 3000) {
+      console.log(new Date().toISOString(), `[SKIP] ${slug}: book too old (target=${bookAge}ms, opp=${oppBookAge}ms > 3000ms)`);
       continue;
     }
 
@@ -803,7 +860,11 @@ async function executeTrade(params) {
     return;
   }
   const balance = currentUsdcBalance;
-  const dynamicFloor = initialDetectedBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, initialDetectedBalance * CONFIG.minBalanceFloorRatio) : 10.0;
+  const floorRatio = CONFIG.minBalanceFloorRatio;
+  const configuredFloor = process.env.MIN_BALANCE_FLOOR_USD ? parseFloat(process.env.MIN_BALANCE_FLOOR_USD) : null;
+  const dynamicFloor = (configuredFloor !== null && !isNaN(configuredFloor))
+    ? configuredFloor
+    : (initialDetectedBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, initialDetectedBalance * floorRatio) : 10.0);
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
   let targetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
 

@@ -62,9 +62,11 @@ const server = createServer(async (req, res) => {
     if (!cachedPayload || Date.now() - lastFetchTime > 5000) {
       await pollVps();
     }
+    const origin = req.headers.origin;
+    const allowedOrigin = origin && (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) ? origin : 'http://localhost:8789';
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
+      'Access-Control-Allow-Origin': allowedOrigin
     });
     return res.end(JSON.stringify(cachedPayload || { trades: [], balance: 49.22 }));
   }

@@ -601,10 +601,10 @@ function renderTradesTable(trades) {
 
   tbody.innerHTML = filtered.map(t => {
     const isSel = t.index === selectedIndex;
-    const timeStr = t.time.substring(11, 19);
-    const shortSlug = t.slug.replace('btc-updown-5m-', '');
-    const shortSig = t.sig ? `${t.sig.substring(0, 4)}...${t.sig.substring(t.sig.length - 4)}` : '-';
-    const solscanUrl = t.sig ? `https://solscan.io/tx/${t.sig}` : '#';
+    const timeStr = esc(t.time.substring(11, 19));
+    const shortSlug = esc(t.slug.replace('btc-updown-5m-', ''));
+    const shortSig = t.sig ? `${esc(t.sig.substring(0, 4))}...${esc(t.sig.substring(t.sig.length - 4))}` : '-';
+    const solscanUrl = t.sig ? `https://solscan.io/tx/${encodeURIComponent(t.sig)}` : '#';
 
     return `
       <tr class="${isSel ? 'selected-row' : ''}" style="cursor:pointer;" onclick="selectTrade(${t.index})">
