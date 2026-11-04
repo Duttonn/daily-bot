@@ -115,7 +115,7 @@ const CONFIG = {
   programId: new PublicKey('GeZwYHaw8x1HhvFojhCYwunK9fqRGZL2zwgJecnFZDKx'),
   usdcMint: new PublicKey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'),
   solanaRpcUrl: process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com',
-  dailyUsdcAta: process.env.DAILY_USDC_ATA || null, // Dynamically resolved on startup from VAULT
+  dailyUsdcAta: process.env.DAILY_USDC_ATA || 'DXpsZgXTarjRiSdMj3jeHodP2Rzv6x86SFohSiEv2Que', // Configurable in .env or auto-updated via cash_account_changed.v1
   paperMode: isPaperMode,
 
   // S6 Mathematical Strategy (Locked pre-commitment)
@@ -675,6 +675,22 @@ function handleDailyMessage(msg) {
   } else if (msg.type === 'authed') {
     isDailyAuthed = true;
     console.log(new Date().toISOString(), 'DAILY AUTH SUCCESS:', JSON.stringify(msg));
+  } else if (msg.type === 'cash_account_changed.v1') {
+    logTrade({ event: 'daily_ws_event', type: msg.type, details: msg });
+    const atomic = parseFloat(msg.availableAtomic || msg.totalAtomic || '0');
+    if (atomic > 0) {
+      const bal = atomic / 1_000_000;
+      currentUsdcBalance = bal;
+      if (initialDetectedBalance === null && currentUsdcBalance > 0) {
+        initialDetectedBalance = currentUsdcBalance;
+        console.log(new Date().toISOString(), `[CAPITAL ACTIF DÉTECTÉ] Solde initial: ${initialDetectedBalance.toFixed(2)}$ | Sizing proportionnel: ${(CONFIG.sizingFraction * 100)}% par trade`);
+      } else if (initialDetectedBalance !== null && currentUsdcBalance > initialDetectedBalance * 1.15) {
+        console.log(new Date().toISOString(), `[DÉPÔT DÉTECTÉ] Solde rehaussé: ${initialDetectedBalance.toFixed(2)}$ -> ${currentUsdcBalance.toFixed(2)}$ | Floor stop-loss ajusté`);
+        initialDetectedBalance = currentUsdcBalance;
+      }
+      lastBalanceCheck = Date.now();
+      console.log(new Date().toISOString(), `[CASH EVENT] Daily USDC balance: ${currentUsdcBalance.toFixed(2)}$ (vault: ${msg.vault || 'n/a'})`);
+    }
   } else if (msg.type === 'error' || msg.type === 'daily_markets_error') {
     console.error(new Date().toISOString(), 'DAILY ERROR MSG:', JSON.stringify(msg));
     logTrade({ event: 'daily_error', code: msg.code, message: msg.message, details: msg });
