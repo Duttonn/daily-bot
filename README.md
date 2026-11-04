@@ -147,7 +147,12 @@ Cette clé privée de 64 octets se présente sous la forme d'un tableau JSON d'e
 ```env
 SESSION_SECRET_KEY=[145,22,89,12,4,233,18,...]
 ```
-Elle est générée lors de l'activation initiale de la session de trading sur la plateforme. Si vous disposez déjà d'un fichier `auth.json`, le bot le prend en charge automatiquement en secours.
+Elle est générée lors de l'activation initiale de la session de trading sur la plateforme (trading 1-click). Si vous disposez déjà d'un fichier `auth.json`, le bot le prend en charge automatiquement en secours.
+
+> **IMPORTANT - Cycle de vie et contrainte d'unicité de la session :**
+> - **Validité :** Une session déléguée est valide pour **7 jours pleins** (168 heures) sur la blockchain Solana. Le bot surveille l'expiration on-chain et recharge les tokens automatiquement.
+> - **Unicité on-chain :** Le smart contract Solana de Daily.fun n'autorise qu'**une seule session active par compte à la fois**. Si vous activez le mode 1-click ou passez un trade depuis un autre appareil (smartphone, autre navigateur), une nouvelle clé est générée et la session du VPS est **immédiatement révoquée on-chain** (`[SESSION EXPIRED]`).
+> - **Règle d'exploitation :** Ne jamais activer le mode 1-click ou trader manuellement depuis votre téléphone pendant que le bot tourne sur le VPS. Vous pouvez consulter le site ou votre solde en lecture seule sans risque.
 
 ---
 
