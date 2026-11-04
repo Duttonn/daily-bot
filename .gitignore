@@ -1,0 +1,18 @@
+# Credentials & Secrets (NEVER COMMIT)
+.env
+auth.json
+*.pem
+*.key
+
+# Runtime Data & Logs
+bot.log
+trades.jsonl
+*.log
+
+# Dependencies
+node_modules/
+
+# Backups & Temporary files
+*.bak
+*.pre-cash
+.DS_Store

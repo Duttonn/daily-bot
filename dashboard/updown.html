@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily.fun S6 - Up/Down Bot</title>
+<style>
+:root {
+  --bg: #f6f7f9;
+  --card: #fff;
+  --ink: #1c2230;
+  --muted: #667085;
+  --line: #e3e6eb;
+  --good: #0f8a4a;
+  --bad: #c62828;
+  --warn: #b26a00;
+  --accent: #2458d6;
+  --soft: #eef2fb;
+  --bar-hover: #1d4ed8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218;
+    --card: #171b23;
+    --ink: #e7eaf0;
+    --muted: #98a2b3;
+    --line: #2a303b;
+    --good: #3ccf7f;
+    --bad: #ff6b6b;
+    --warn: #f0b24a;
+    --accent: #7aa2ff;
+    --soft: #1d2433;
+    --bar-hover: #93b5ff;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: center;
+}
+h1 { font-size: 16px; margin: 0 4px 0 0; display: flex; align-items: center; gap: 8px; }
+h2 { font-size: 15px; margin: 0 0 10px; }
+main {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 16px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+}
+section {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  min-width: 0;
+}
+section.wide { grid-column: 1 / -1; }
+.badge {
+  padding: 3px 9px;
+  border-radius: 99px;
+  font-weight: 600;
+  font-size: 12px;
+  background: var(--soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.badge.running {
+  background: color-mix(in srgb, var(--good) 18%, transparent);
+  color: var(--good);
+}
+.badge.warmup {
+  background: color-mix(in srgb, var(--warn) 20%, transparent);
+  color: var(--warn);
+}
+.badge.offline {
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+  color: var(--bad);
+}
+.badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.kpi { display: flex; flex-direction: column; }
+.kpi b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.kpi span { color: var(--muted); font-size: 12px; }
+.pos { color: var(--good); }
+.neg { color: var(--bad); }
+.muted { color: var(--muted); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button {
+  font: inherit;
+  padding: 5px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button:disabled { opacity: .45; cursor: default; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
+th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child, td.l, th.l { text-align: left; }
+td.wrap { white-space: normal; }
+tr.selected-row { background: var(--soft); }
+svg { width: 100%; height: auto; display: block; }
+.axis { stroke: var(--line); }
+.grid text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+code { font-size: 12px; background: var(--soft); padding: 1px 4px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.two { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.pill {
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 11px;
+  display: inline-block;
+}
+.pill-up { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); }
+.pill-down { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+
+/* Timeline bar Euphoria style */
+.timeline-wrap {
+  margin: 10px 0 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.timeline-track {
+  position: relative;
+  height: 22px;
+  background: color-mix(in srgb, var(--line) 40%, transparent);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.t-zone-obs {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 59.33%; /* 178s / 300s */
+  background: color-mix(in srgb, var(--muted) 15%, transparent);
+}
+.t-zone-win {
+  position: absolute;
+  left: 59.33%;
+  width: 1.34%; /* 4s / 300s */
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.t-zone-hold {
+  position: absolute;
+  left: 60.67%;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--good) 15%, transparent);
+}
+.t-pin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #fff;
+  box-shadow: 0 0 6px #000;
+  z-index: 5;
+  transition: left 0.3s ease;
+}
+.timeline-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chips for quick trade pick */
+.chips-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 10px;
+}
+.chip {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.chip.active {
+  border-color: var(--accent);
+  background: var(--soft);
+  font-weight: 600;
+}
+.chip.won { border-left: 3px solid var(--good); }
+.chip.lost { border-left: 3px solid var(--bad); }
+
+@media (max-width: 600px) {
+  main { padding: 10px; }
+  header { padding: 8px 10px; gap: 8px 12px; }
+  .kpi b { font-size: 14px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>
+    <span>Daily.fun S6</span>
+  </h1>
+  <span id="bot-badge" class="badge running">
+    <span class="badge-dot"></span>
+    <span id="bot-state-txt">en marche (F20)</span>
+  </span>
+
+  <div class="kpi">
+    <b id="hdr-bal">- $</b>
+    <span>solde USDC (plancher 25 $)</span>
+  </div>
+
+  <div class="kpi">
+    <b id="hdr-pnl">- $</b>
+    <span>P&L net (<span id="hdr-roi">-</span>)</span>
+  </div>
+
+  <div class="kpi">
+    <b id="hdr-wr">- %</b>
+    <span>win rate (<span id="hdr-score">-</span>)</span>
+  </div>
+
+  <div class="kpi">
+    <b id="hdr-timing">120.0s</b>
+    <span>timing cible (F20 : 2 min fin)</span>
+  </div>
+
+  <div class="kpi">
+    <b id="hdr-last">-</b>
+    <span>dernier trade</span>
+  </div>
+
+  <div class="row" style="margin-left:auto;">
+    <span id="sync-pill" class="badge muted" style="font-size:11px;">Auto : sync...</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Section 1 : Performance Globale & Courbe de Solde (Look Euphoria) -->
+  <section class="wide">
+    <div class="row" style="justify-content:space-between; margin-bottom:8px;">
+      <h2>Évolution du Solde & P&L Cumulé</h2>
+      <div class="row">
+        <span class="muted" style="font-size:12px;">Capital initial : <b>51.62 $</b></span>
+        <span class="muted" style="font-size:12px;">·</span>
+        <span class="muted" style="font-size:12px;">Sizing : <b>12%</b> par trade</span>
+        <span class="muted" style="font-size:12px;">·</span>
+        <span class="muted" style="font-size:12px;">Frais taker : <b>700 bps</b></span>
+      </div>
+    </div>
+
+    <!-- Summary KPI line Euphoria style -->
+    <div id="summary-kpis" class="row" style="gap:24px; margin-bottom:14px; padding:10px 14px; background:var(--bg); border:1px solid var(--line); border-radius:8px;">
+      <div class="kpi"><b id="kpi-pnl" class="pos">- $</b><span>P&L net total</span></div>
+      <div class="kpi"><b id="kpi-wr" class="pos">- %</b><span>taux de réussite</span></div>
+      <div class="kpi"><b id="kpi-staked">- $</b><span>total misé</span></div>
+      <div class="kpi"><b id="kpi-payout">- $</b><span>total payouts perçus</span></div>
+      <div class="kpi"><b id="kpi-fees">- $</b><span>frais plateforme payés</span></div>
+      <div class="kpi"><b id="kpi-zscore" class="pos">- σ</b><span>Z-score vs prix payés</span></div>
+      <div class="kpi"><b id="kpi-progress">- / 300</b><span>protocole 300 trades</span></div>
+    </div>
+
+    <!-- SVG Cumulative Curve Euphoria style -->
+    <div id="chart-curve"></div>
+    <div id="chart-bars" style="margin-top:14px;"></div>
+  </section>
+
+  <!-- Section 2 : Inspecteur de Manche & Timing 5 min (Euphoria Style) -->
+  <section class="wide">
+    <div class="row" style="justify-content:space-between; margin-bottom:4px;">
+      <h2>Timing de la Manche (5 min) & Décomposition de l'Ordre</h2>
+      <span class="muted" style="font-size:12px;">Sélectionne un trade ci-dessous pour voir sa chronologie</span>
+    </div>
+
+    <!-- Quick Trade Chips -->
+    <div class="chips-row" id="trade-chips"></div>
+
+    <!-- Timeline 5m Euphoria Style -->
+    <div class="timeline-wrap">
+      <div class="timeline-track">
+        <div class="t-zone-obs" title="Observation (0 à 178s)"></div>
+        <div class="t-zone-win" title="Fenêtre de tir F20 (178s à 182s = 120s restantes)"></div>
+        <div class="t-zone-hold" title="Tenue de la position (182s à 300s = 120s)"></div>
+        <div class="t-pin" id="timeline-pin" style="left: 60.0%;"></div>
+      </div>
+      <div class="timeline-labels">
+        <span>0:00 (Strike fixé)</span>
+        <span>1:00</span>
+        <span>2:00</span>
+        <span style="color:var(--accent); font-weight:700;">🎯 3:00 (Tir F20 - 120s fin)</span>
+        <span>4:00</span>
+        <span>5:00 (Règlement Pyth)</span>
+      </div>
+    </div>
+
+    <!-- Selected Round Details in Two-Column Grid -->
+    <div class="two" style="margin-top:10px;" id="trade-detail-grid">
+      <!-- Injected by JS -->
+    </div>
+  </section>
+
+  <!-- Section 3 : Tableau Détaillé des Trades (Euphoria Style) -->
+  <section class="wide">
+    <div class="row" style="justify-content:space-between; margin-bottom:10px;">
+      <h2>Historique Détaillé des Positions</h2>
+      <div class="row">
+        <button class="filter-btn primary" data-f="all">Tous (<span id="cnt-all">0</span>)</button>
+        <button class="filter-btn" data-f="won">Gagnés (<span id="cnt-won">0</span>)</button>
+        <button class="filter-btn" data-f="lost">Perdus (<span id="cnt-lost">0</span>)</button>
+        <button class="filter-btn" data-f="up">UP (<span id="cnt-up">0</span>)</button>
+        <button class="filter-btn" data-f="down">DOWN (<span id="cnt-down">0</span>)</button>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="l">#</th>
+            <th class="l">Heure UTC</th>
+            <th class="l">Round Daily.fun</th>
+            <th class="l">Sens</th>
+            <th>Strike Pyth</th>
+            <th>Cote ask</th>
+            <th>Parts</th>
+            <th>Mise totale</th>
+            <th>Frais</th>
+            <th>Payout</th>
+            <th>P&L net</th>
+            <th>ROI</th>
+            <th>Solde après</th>
+            <th>Tx Solana</th>
+          </tr>
+        </thead>
+        <tbody id="trades-tbody"></tbody>
+        <tfoot id="trades-tfoot"></tfoot>
+      </table>
+    </div>
+  </section>
+
+  <!-- Section 4 : Règle de Jugement des 300 Trades & Microstructure S6 -->
+  <section>
+    <h2>Règle de Jugement des 300 Trades (F20)</h2>
+    <p class="muted">Engagement méthodologique strict : aucun filtre de prix ad hoc en cours de test.</p>
+    <table>
+      <tr><td class="l">Objectif fixé</td><td><b>300 trades fermés</b></td></tr>
+      <tr><td class="l">Avancement actuel</td><td><b id="rule-progress">-</b></td></tr>
+      <tr><td class="l">Condition de maintien #1</td><td>Niveau 1 positif (<b id="rule-pnl-status">-</b>)</td></tr>
+      <tr><td class="l">Condition de maintien #2</td><td>Victoires &gt; Somme des prix + 2σ (<b id="rule-z-status">-</b>)</td></tr>
+      <tr><td class="l">Somme des prix payés (&sum; p<sub>i</sub>)</td><td id="rule-sum-p">- $</td></tr>
+      <tr><td class="l">Victoires réelles (W)</td><td id="rule-wins">-</td></tr>
+      <tr><td class="l">Écart standard (&sigma;)</td><td id="rule-sigma">-</td></tr>
+      <tr><td class="l">Z-score actuel (W - &sum;p) / &sigma;</td><td><b id="rule-zscore">-</b></td></tr>
+    </table>
+  </section>
+
+  <!-- Section 5 : Paramètres Actifs du Bot Live -->
+  <section>
+    <h2>Paramètres Actifs du Bot (Canada VPS)</h2>
+    <table>
+      <tr><td class="l">Stratégie</td><td><b>S6 Forward Edge Model</b></td></tr>
+      <tr><td class="l">Filtre Volatilité Réelle</td><td><code>&sigma;<sub>M</sub> &lt; 2.30 $/&radic;s</code> (calme)</td></tr>
+      <tr><td class="l">Filtre d'Edge Minimum</td><td><code>q - cost &ge; +0.05</code> (+5 c net)</td></tr>
+      <tr><td class="l">Fenêtre d'Exécution F20</td><td><code>118s &agrave; 122s</code> restantes (2 min fin)</td></tr>
+      <tr><td class="l">Capital Alloué par Trade</td><td><code>12%</code> du solde disponible</td></tr>
+      <tr><td class="l">Plancher Dur de Sécurité</td><td><code>25.00 $</code> (arrêt si atteint)</td></tr>
+      <tr><td class="l">Flux Ticks Haute Fréquence</td><td>Binance Futures BTCUSDT bookTicker</td></tr>
+      <tr><td class="l">Oracle de Dénouement</td><td>Pyth Network BTC/USD (à closeTs)</td></tr>
+    </table>
+  </section>
+
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const money = (x, d = 2) => x == null ? '-' : `${x >= 0 ? '+' : ''}${x.toFixed(d)} $`;
+const cls = (x) => x == null ? '' : x >= 0 ? 'pos' : 'neg';
+
+let allTrades = [];
+let selectedIndex = null;
+let currentFilter = 'all';
+
+// Euphoria-Style Line Chart for Balance Evolution
+function renderBalanceCurve(trades, startBalance = 51.62) {
+  const container = $('chart-curve');
+  if (!trades || trades.length === 0) {
+    container.innerHTML = '<p class="muted">Aucun trade enregistré.</p>';
+    return;
+  }
+
+  const points = [[0, startBalance]];
+  trades.forEach(t => {
+    points.push([t.index, t.balanceAfter]);
+  });
+
+  const W = 1000, H = 220, P_LEFT = 50, P_RIGHT = 30, P_TOP = 20, P_BOT = 30;
+  const ys = points.map(p => p[1]);
+  const minVal = Math.floor(Math.min(startBalance, ...ys) - 2);
+  const maxVal = Math.ceil(Math.max(startBalance, ...ys) + 3);
+
+  const X = (i) => P_LEFT + (i / (points.length - 1 || 1)) * (W - P_LEFT - P_RIGHT);
+  const Y = (v) => H - P_BOT - ((v - minVal) / (maxVal - minVal || 1)) * (H - P_TOP - P_BOT);
+
+  const numTicks = 5;
+  const gridVals = Array.from({ length: numTicks + 1 }, (_, i) => minVal + ((maxVal - minVal) * i) / numTicks);
+
+  // Path data
+  const lineD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${X(i).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(' ');
+  const areaD = `${lineD} L ${X(points.length - 1).toFixed(1)} ${Y(minVal).toFixed(1)} L ${X(0).toFixed(1)} ${Y(minVal).toFixed(1)} Z`;
+
+  const baseY = Y(startBalance);
+
+  let dotsHtml = points.map((p, i) => {
+    if (i === 0) return '';
+    const t = trades[i - 1];
+    const isSel = t.index === selectedIndex;
+    const color = t.won ? 'var(--good)' : 'var(--bad)';
+    return `<circle cx="${X(i).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="${isSel ? 5 : 3}" fill="${color}" stroke="var(--card)" stroke-width="1.5" style="cursor:pointer;" onclick="selectTrade(${t.index})">
+      <title>Trade #${t.index}: ${t.side} (${money(t.pnl)}) -> Solde: ${t.balanceAfter.toFixed(2)}$</title>
+    </circle>`;
+  }).join('');
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de solde">
+      <!-- Grid lines -->
+      <g class="grid">
+        ${gridVals.map(v => `
+          <line class="axis" x1="${P_LEFT}" x2="${W - P_RIGHT}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}"/>
+          <text x="${P_LEFT - 8}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${v.toFixed(0)} $</text>
+        `).join('')}
+      </g>
+
+      <!-- Baseline 51.62$ -->
+      <line x1="${P_LEFT}" x2="${W - P_RIGHT}" y1="${baseY.toFixed(1)}" y2="${baseY.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>
+      <text x="${W - P_RIGHT + 4}" y="${(baseY + 4).toFixed(1)}" fill="var(--muted)" font-size="10">Base (51.62 $)</text>
+
+      <!-- Shaded Area -->
+      <path d="${areaD}" fill="color-mix(in srgb, var(--accent) 12%, transparent)"/>
+
+      <!-- Main Curve -->
+      <path d="${lineD}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>
+
+      <!-- Trade Dots -->
+      ${dotsHtml}
+
+      <!-- Bottom Index Labels -->
+      <g class="grid">
+        ${points.map((p, i) => {
+          if (i === 0 || i % Math.max(1, Math.floor(points.length / 8)) !== 0) return '';
+          return `<text x="${X(i).toFixed(1)}" y="${H - 10}" text-anchor="middle">#${i}</text>`;
+        }).join('')}
+      </g>
+    </svg>
+  `;
+}
+
+// Euphoria-Style Bar Chart for P&L per round
+function renderPnlBars(trades) {
+  const container = $('chart-bars');
+  if (!trades || trades.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const W = 1000, H = 140, P_LEFT = 50, P_RIGHT = 30, P_TOP = 15, P_BOT = 25;
+  const vs = trades.map(t => t.pnl);
+  const maxAmp = Math.max(2, ...vs.map(Math.abs));
+
+  const zeroY = P_TOP + (H - P_TOP - P_BOT) / 2;
+  const bw = (W - P_LEFT - P_RIGHT) / trades.length;
+  const Y = (v) => zeroY - (v / maxAmp) * ((H - P_TOP - P_BOT) / 2);
+
+  const bars = trades.map((t, i) => {
+    const x = P_LEFT + i * bw + 2;
+    const w = Math.max(2, bw - 4);
+    const yVal = Y(t.pnl);
+    const barY = Math.min(zeroY, yVal);
+    const barH = Math.max(2, Math.abs(yVal - zeroY));
+    const fill = t.won ? 'var(--good)' : 'var(--bad)';
+    const isSel = t.index === selectedIndex;
+    const stroke = isSel ? 'stroke="var(--ink)" stroke-width="1.5"' : '';
+
+    return `<rect x="${x.toFixed(1)}" y="${barY.toFixed(1)}" width="${w.toFixed(1)}" height="${barH.toFixed(1)}" fill="${fill}" rx="2" ${stroke} style="cursor:pointer;" onclick="selectTrade(${t.index})">
+      <title>Trade #${t.index}: ${t.side} (${money(t.pnl)}) Cote: ${t.price}$</title>
+    </rect>
+    <text x="${(x + w / 2).toFixed(1)}" y="${H - 8}" fill="var(--muted)" font-size="9" text-anchor="middle">#${t.index}</text>`;
+  }).join('');
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="P&L par trade">
+      <line class="axis" x1="${P_LEFT}" x2="${W - P_RIGHT}" y1="${zeroY.toFixed(1)}" y2="${zeroY.toFixed(1)}" stroke-width="1"/>
+      <g class="grid">
+        <text x="${P_LEFT - 8}" y="${P_TOP + 8}" text-anchor="end">+${maxAmp.toFixed(1)} $</text>
+        <text x="${P_LEFT - 8}" y="${(zeroY + 3).toFixed(1)}" text-anchor="end">0</text>
+        <text x="${P_LEFT - 8}" y="${H - P_BOT}" text-anchor="end">-${maxAmp.toFixed(1)} $</text>
+      </g>
+      ${bars}
+    </svg>
+  `;
+}
+
+// Select a trade to inspect
+function selectTrade(idx) {
+  selectedIndex = idx;
+  renderAllComponents();
+}
+
+// Render the Detail Panel for Selected Trade
+function renderTradeDetail(t) {
+  const container = $('trade-detail-grid');
+  if (!t) {
+    container.innerHTML = '<p class="muted">Sélectionne un trade.</p>';
+    return;
+  }
+
+  // Position pin in timeline: elapsedSeconds / 300 * 100
+  const pinPct = Math.min(100, Math.max(0, (t.elapsedSeconds / 300) * 100));
+  const pinEl = $('timeline-pin');
+  if (pinEl) pinEl.style.left = `${pinPct.toFixed(1)}%`;
+
+  container.innerHTML = `
+    <div style="background:var(--bg); padding:10px 14px; border-radius:8px; border:1px solid var(--line);">
+      <div class="row" style="justify-content:space-between; margin-bottom:6px;">
+        <span style="font-weight:700;">Détails Position #${t.index}</span>
+        <span class="pill ${t.side === 'UP' ? 'pill-up' : 'pill-down'}">${t.side === 'UP' ? '▲ UP' : '▼ DOWN'}</span>
+      </div>
+      <table style="font-size:12px;">
+        <tr><td class="l">Round</td><td class="l"><code>${esc(t.slug.replace('btc-updown-5m-', ''))}</code></td></tr>
+        <tr><td class="l">Horodatage</td><td>${t.time.substring(11, 19)} UTC</td></tr>
+        <tr><td class="l">Strike Pyth (openPrice)</td><td><b>${t.openPrice ? t.openPrice.toFixed(2) + ' $' : '-'}</b></td></tr>
+        <tr><td class="l">Cote d'achat (Ask Level 1)</td><td><b>${t.price.toFixed(3)} $</b></td></tr>
+        <tr><td class="l">Timing restant au tir</td><td><b>${t.secondsRemaining}s</b> (T+${t.elapsedSeconds}s)</td></tr>
+        <tr><td class="l">Volume de parts</td><td><b>${t.size} parts</b></td></tr>
+      </table>
+    </div>
+
+    <div style="background:var(--bg); padding:10px 14px; border-radius:8px; border:1px solid var(--line);">
+      <div class="row" style="justify-content:space-between; margin-bottom:6px;">
+        <span style="font-weight:700;">Financier & Dénouement</span>
+        <span class="badge ${t.won ? 'running' : 'offline'}">${t.won ? '✓ GAGNÉ' : '✗ PERDU'}</span>
+      </div>
+      <table style="font-size:12px;">
+        <tr><td class="l">Mise brute</td><td>${t.cost.toFixed(2)} $</td></tr>
+        <tr><td class="l">Frais taker (700 bps)</td><td>${t.fee.toFixed(3)} $</td></tr>
+        <tr><td class="l">Mise totale débitée</td><td><b>${t.totalMise.toFixed(2)} $</b></td></tr>
+        <tr><td class="l">Payout perçu (1.00$/sh si gagné)</td><td><b>${t.payout.toFixed(2)} $</b></td></tr>
+        <tr><td class="l">P&L Net de l'opération</td><td><b class="${cls(t.pnl)}">${money(t.pnl)}</b></td></tr>
+        <tr><td class="l">Rendement net (ROI)</td><td><b class="${cls(t.roi)}">${t.roi > 0 ? '+' : ''}${t.roi}%</b></td></tr>
+      </table>
+    </div>
+  `;
+}
+
+// Render the Table of Trades Euphoria Style
+function renderTradesTable(trades) {
+  const tbody = $('trades-tbody');
+  const tfoot = $('trades-tfoot');
+
+  let filtered = trades;
+  if (currentFilter === 'won') filtered = trades.filter(t => t.won);
+  if (currentFilter === 'lost') filtered = trades.filter(t => !t.won);
+  if (currentFilter === 'up') filtered = trades.filter(t => t.side === 'UP');
+  if (currentFilter === 'down') filtered = trades.filter(t => t.side === 'DOWN');
+
+  tbody.innerHTML = filtered.map(t => {
+    const isSel = t.index === selectedIndex;
+    const timeStr = t.time.substring(11, 19);
+    const shortSlug = t.slug.replace('btc-updown-5m-', '');
+    const shortSig = t.sig ? `${t.sig.substring(0, 4)}...${t.sig.substring(t.sig.length - 4)}` : '-';
+    const solscanUrl = t.sig ? `https://solscan.io/tx/${t.sig}` : '#';
+
+    return `
+      <tr class="${isSel ? 'selected-row' : ''}" style="cursor:pointer;" onclick="selectTrade(${t.index})">
+        <td class="l"><b>#${t.index}</b></td>
+        <td class="l muted">${timeStr}</td>
+        <td class="l"><code>${shortSlug}</code></td>
+        <td class="l"><span class="pill ${t.side === 'UP' ? 'pill-up' : 'pill-down'}">${t.side}</span></td>
+        <td>${t.openPrice ? t.openPrice.toFixed(1) : '-'}</td>
+        <td>${t.price.toFixed(3)}</td>
+        <td>${t.size}</td>
+        <td>${t.totalMise.toFixed(2)} $</td>
+        <td class="muted">${t.fee.toFixed(3)} $</td>
+        <td>${t.payout.toFixed(2)} $</td>
+        <td class="${cls(t.pnl)}"><b>${money(t.pnl)}</b></td>
+        <td class="${cls(t.roi)}">${t.roi > 0 ? '+' : ''}${t.roi}%</td>
+        <td><b>${t.balanceAfter.toFixed(2)} $</b></td>
+        <td><a href="${solscanUrl}" target="_blank" style="color:var(--accent); text-decoration:none;" onclick="event.stopPropagation();"><code>${shortSig}</code></a></td>
+      </tr>
+    `;
+  }).join('');
+
+  // Total line in tfoot
+  const totMise = filtered.reduce((acc, t) => acc + t.totalMise, 0);
+  const totFee = filtered.reduce((acc, t) => acc + t.fee, 0);
+  const totPay = filtered.reduce((acc, t) => acc + t.payout, 0);
+  const totPnl = filtered.reduce((acc, t) => acc + t.pnl, 0);
+  const totShares = filtered.reduce((acc, t) => acc + t.size, 0);
+
+  tfoot.innerHTML = `
+    <tr style="font-weight:700; border-top:2px solid var(--line);">
+      <td class="l" colspan="6">TOTAL (${filtered.length} trades affichés)</td>
+      <td>${totShares}</td>
+      <td>${totMise.toFixed(2)} $</td>
+      <td>${totFee.toFixed(3)} $</td>
+      <td>${totPay.toFixed(2)} $</td>
+      <td class="${cls(totPnl)}">${money(totPnl)}</td>
+      <td class="${cls(totPnl)}">${totMise > 0 ? ((totPnl / totMise) * 100).toFixed(1) : 0}%</td>
+      <td colspan="2"></td>
+    </tr>
+  `;
+}
+
+// Render All Components
+function renderAllComponents() {
+  if (!allTrades || allTrades.length === 0) return;
+
+  // Keep latest trade selected if none selected
+  if (selectedIndex == null || !allTrades.some(t => t.index === selectedIndex)) {
+    selectedIndex = allTrades[allTrades.length - 1].index;
+  }
+
+  // 1. Update Trade Chips
+  const chipsContainer = $('trade-chips');
+  if (chipsContainer) {
+    chipsContainer.innerHTML = allTrades.slice().reverse().map(t => `
+      <div class="chip ${t.won ? 'won' : 'lost'} ${t.index === selectedIndex ? 'active' : ''}" onclick="selectTrade(${t.index})">
+        #${t.index} ${t.side} (${money(t.pnl)})
+      </div>
+    `).join('');
+  }
+
+  // 2. Charts
+  renderBalanceCurve(allTrades);
+  renderPnlBars(allTrades);
+
+  // 3. Detail
+  const selectedTrade = allTrades.find(t => t.index === selectedIndex);
+  renderTradeDetail(selectedTrade);
+
+  // 4. Table
+  renderTradesTable(allTrades);
+
+  // 5. Counts on filter buttons
+  $('cnt-all').textContent = allTrades.length;
+  $('cnt-won').textContent = allTrades.filter(t => t.won).length;
+  $('cnt-lost').textContent = allTrades.filter(t => !t.won).length;
+  $('cnt-up').textContent = allTrades.filter(t => t.side === 'UP').length;
+  $('cnt-down').textContent = allTrades.filter(t => t.side === 'DOWN').length;
+}
+
+// Main Polling Loop
+async function syncData() {
+  try {
+    const res = await fetch('/api/trades');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    if (data && Array.isArray(data.trades) && data.trades.length > 0) {
+      allTrades = data.trades;
+
+      // Header KPIs
+      const bal = data.balance != null ? Number(data.balance) : allTrades[allTrades.length - 1].balanceAfter;
+      const startBalance = 51.62;
+      const netPnl = bal - startBalance;
+      const roiTotal = (netPnl / startBalance) * 100;
+
+      const wins = allTrades.filter(t => t.won).length;
+      const total = allTrades.length;
+      const wr = (wins / total) * 100;
+
+      $('hdr-bal').textContent = bal.toFixed(2) + ' $';
+      $('hdr-pnl').textContent = money(netPnl);
+      $('hdr-pnl').className = cls(netPnl);
+      $('hdr-roi').textContent = (roiTotal >= 0 ? '+' : '') + roiTotal.toFixed(1) + '%';
+      $('hdr-wr').textContent = wr.toFixed(1) + '%';
+      $('hdr-score').textContent = `${wins}V / ${total - wins}D`;
+
+      const lastTrade = allTrades[allTrades.length - 1];
+      const lastT = new Date(lastTrade.time).getTime();
+      const minAgo = Math.max(0, Math.floor((Date.now() - lastT) / 60000));
+      $('hdr-last').textContent = minAgo < 1 ? "à l'instant" : `il y a ${minAgo} min`;
+
+      // Summary KPIs
+      $('kpi-pnl').textContent = money(netPnl);
+      $('kpi-pnl').className = cls(netPnl);
+      $('kpi-wr').textContent = wr.toFixed(1) + '%';
+      $('kpi-wr').className = cls(netPnl);
+
+      const totStaked = allTrades.reduce((acc, t) => acc + t.totalMise, 0);
+      const totPayout = allTrades.reduce((acc, t) => acc + t.payout, 0);
+      const totFees = allTrades.reduce((acc, t) => acc + t.fee, 0);
+
+      $('kpi-staked').textContent = totStaked.toFixed(2) + ' $';
+      $('kpi-payout').textContent = totPayout.toFixed(2) + ' $';
+      $('kpi-fees').textContent = totFees.toFixed(3) + ' $';
+
+      // Statistics 300 Trades Rule:
+      // sum(p_i)
+      const sumP = allTrades.reduce((acc, t) => acc + t.price, 0);
+      const variance = allTrades.reduce((acc, t) => acc + (t.price * (1 - t.price)), 0);
+      const sigma = Math.sqrt(variance);
+      const zScore = sigma > 0 ? (wins - sumP) / sigma : 0;
+
+      $('kpi-zscore').textContent = (zScore >= 0 ? '+' : '') + zScore.toFixed(2) + ' σ';
+      $('kpi-zscore').className = zScore >= 2.0 ? 'pos' : zScore >= 0 ? 'pos' : 'neg';
+      $('kpi-progress').textContent = `${total} / 300 (${((total/300)*100).toFixed(0)}%)`;
+
+      // Rule box
+      $('rule-progress').textContent = `${total} / 300 trades (${((total / 300) * 100).toFixed(1)}%)`;
+      $('rule-pnl-status').textContent = netPnl > 0 ? 'VALIDÉ (+)' : 'EN RETARD (-)';
+      $('rule-pnl-status').className = netPnl > 0 ? 'pos' : 'neg';
+
+      $('rule-z-status').textContent = zScore >= 2.0 ? 'VALIDÉ (≥ 2σ)' : `${zScore.toFixed(2)}σ (cible: ≥ 2.00σ)`;
+      $('rule-z-status').className = zScore >= 2.0 ? 'pos' : 'muted';
+
+      $('rule-sum-p').textContent = sumP.toFixed(2) + ' $';
+      $('rule-wins').textContent = `${wins} victoires`;
+      $('rule-sigma').textContent = sigma.toFixed(2);
+      $('rule-zscore').textContent = (zScore >= 0 ? '+' : '') + zScore.toFixed(2) + ' σ';
+      $('rule-zscore').className = cls(zScore);
+
+      // Heartbeat status
+      if (data.heartbeat) {
+        const hb = data.heartbeat;
+        const stateTxt = $('bot-state-txt');
+        const badge = $('bot-badge');
+        if (hb.sigmaM != null) {
+          stateTxt.textContent = `en marche (F20 · σ: ${hb.sigmaM.toFixed(2)})`;
+          badge.className = hb.sigmaM < 2.30 ? 'badge running' : 'badge warmup';
+        }
+      }
+
+      // Render view
+      renderAllComponents();
+
+      // Pill timestamp
+      const d = new Date();
+      $('sync-pill').textContent = `Auto (${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')})`;
+      $('sync-pill').className = 'badge running';
+    }
+  } catch(e) {
+    $('sync-pill').textContent = 'Erreur sync';
+    $('sync-pill').className = 'badge offline';
+  }
+}
+
+// Filter button clicks
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('primary'));
+    btn.classList.add('primary');
+    currentFilter = btn.dataset.f;
+    renderTradesTable(allTrades);
+  };
+});
+
+// Initial run + Polling every 3.5 seconds
+syncData();
+setInterval(syncData, 3500);
+</script>
+
+</body>
+</html>

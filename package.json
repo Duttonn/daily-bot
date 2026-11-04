@@ -1,0 +1,27 @@
+{
+  "name": "daily-bot",
+  "version": "1.0.0",
+  "description": "High-precision Daily.fun BTC 5m prediction market trading engine (S6 Forward Edge Model)",
+  "type": "module",
+  "main": "daily-s6-bot.mjs",
+  "scripts": {
+    "start": "node daily-s6-bot.mjs",
+    "paper": "node daily-s6-bot.mjs --paper",
+    "dashboard": "node dashboard/updown-server.mjs",
+    "export": "node export-trades.mjs"
+  },
+  "keywords": [
+    "daily-fun",
+    "prediction-markets",
+    "solana",
+    "trading-bot",
+    "quantitative-finance"
+  ],
+  "author": "Duttonn",
+  "license": "MIT",
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.22.1"
+  }
+}
