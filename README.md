@@ -117,12 +117,37 @@ PAPER_MODE=false
 ```
 
 ### Comment extraire vos clés depuis Daily.fun ?
-1. Connectez votre wallet sur [Daily.fun](https://daily.fun).
-2. Ouvrez les **Outils de développement Chrome** (`F12` ou `Cmd+Option+I`) > Onglet **Application** > **Local Storage** > `https://daily.fun`.
-3. Récupérez :
-   - `privy:token` -> `PRIVY_TOKEN`
-   - `privy:refresh_token` -> `PRIVY_REFRESH_TOKEN`
-4. La session Authority Solana est créée lors de votre première approbation de session de trading sur Daily.fun (sauvegardée localement par Privy).
+
+#### A. Obtenir les Tokens Privy pour l'Auto-Rotation 24/7
+Le jeton de session Daily.fun (`PRIVY_TOKEN`) expire toutes les 60 minutes. Pour permettre au bot de tourner sans interruption pendant des semaines, il a impérativement besoin du `PRIVY_REFRESH_TOKEN`.
+Toutes les 20 minutes (et automatiquement en cas d'erreur `bad token`), le bot contacte l'API Privy (`https://auth.privy.io/api/v1/sessions`) pour renouveler son JWT et sauvegarde le nouveau token à chaud.
+
+**Méthode 1-clic depuis la console du navigateur :**
+1. Connectez-vous sur [https://daily.fun](https://daily.fun) avec votre wallet Solana.
+2. Ouvrez les **Outils de développement** (`F12` ou `Cmd + Option + I` sur Mac).
+3. Cliquez sur l'onglet **Console**.
+4. Collez la commande suivante et appuyez sur **Entrée** :
+   ```javascript
+   copy(`PRIVY_TOKEN="${localStorage.getItem("privy:token")}"\nPRIVY_REFRESH_TOKEN="${localStorage.getItem("privy:refresh_token")}"`);
+   console.log("✅ Tokens copiés dans le presse-papiers !");
+   ```
+5. Ouvrez votre fichier `.env` sur le VPS et collez directement (`Ctrl+V` ou `Cmd+V`).
+
+**Méthode manuelle (Storage) :**
+- Dans les DevTools, allez sur l'onglet **Application** (ou **Stockage**) > **Local Storage** > `https://daily.fun`.
+- Cherchez la clé `privy:token` : double-cliquez sur sa valeur pour la copier (`PRIVY_TOKEN`).
+- Cherchez la clé `privy:refresh_token` : copiez sa valeur (`PRIVY_REFRESH_TOKEN`).
+
+#### B. Obtenir l'adresse de Wallet (`OWNER_ADDRESS`)
+C'est l'adresse publique Solana de votre wallet Phantom / Backpack / Solflare connecté à Daily.fun (ex: `DY4AhsK8KkGWaxEu4kFwgyX74xRyzJeNFEvRsiJXuXG3`), visible en cliquant sur votre profil en haut à droite.
+
+#### C. Obtenir la Clé de Session (`SESSION_SECRET_KEY`)
+Daily.fun utilise un mécanisme de session authority déléguée (`trading_session_v4`) sur Solana pour signer les ordres sans ouvrir une popup de wallet à chaque trade de 5 minutes.
+Cette clé privée de 64 octets se présente sous la forme d'un tableau JSON d'entiers :
+```env
+SESSION_SECRET_KEY=[145,22,89,12,4,233,18,...]
+```
+Elle est générée lors de l'activation initiale de la session de trading sur la plateforme. Si vous disposez déjà d'un fichier `auth.json`, le bot le prend en charge automatiquement en secours.
 
 ---
 
