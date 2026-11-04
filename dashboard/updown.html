@@ -453,7 +453,7 @@ function renderBalanceCurve(trades, startBalance = 51.62) {
     const isSel = t.index === selectedIndex;
     const color = t.won ? 'var(--good)' : 'var(--bad)';
     return `<circle cx="${X(i).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="${isSel ? 5 : 3}" fill="${color}" stroke="var(--card)" stroke-width="1.5" style="cursor:pointer;" onclick="selectTrade(${t.index})">
-      <title>Trade #${t.index}: ${t.side} (${money(t.pnl)}) -> Solde: ${t.balanceAfter.toFixed(2)}$</title>
+      <title>Trade #${t.index}: ${t.side} (${money(t.pnl)}) | P&L cumulé: ${money(t.cumPnl)}</title>
     </circle>`;
   }).join('');
 
@@ -697,9 +697,11 @@ async function syncData() {
 
       // Header KPIs
       const bal = data.balance != null ? Number(data.balance) : allTrades[allTrades.length - 1].balanceAfter;
-      const startBalance = 51.62;
-      const netPnl = bal - startBalance;
-      const roiTotal = (netPnl / startBalance) * 100;
+      const netPnl = allTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
+      const totStaked = allTrades.reduce((acc, t) => acc + (t.totalMise || (t.cost + t.fee)), 0);
+      const totPayout = allTrades.reduce((acc, t) => acc + (t.payout || 0), 0);
+      const totFees = allTrades.reduce((acc, t) => acc + (t.fee || 0), 0);
+      const roiTotal = totStaked > 0 ? (netPnl / totStaked) * 100 : 0;
 
       const wins = allTrades.filter(t => t.won).length;
       const total = allTrades.length;
@@ -722,10 +724,6 @@ async function syncData() {
       $('kpi-pnl').className = cls(netPnl);
       $('kpi-wr').textContent = wr.toFixed(1) + '%';
       $('kpi-wr').className = cls(netPnl);
-
-      const totStaked = allTrades.reduce((acc, t) => acc + t.totalMise, 0);
-      const totPayout = allTrades.reduce((acc, t) => acc + t.payout, 0);
-      const totFees = allTrades.reduce((acc, t) => acc + t.fee, 0);
 
       $('kpi-staked').textContent = totStaked.toFixed(2) + ' $';
       $('kpi-payout').textContent = totPayout.toFixed(2) + ' $';
