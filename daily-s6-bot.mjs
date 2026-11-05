@@ -270,6 +270,7 @@ async function refreshPrivySession() {
 
     const data = await res.json();
     if (data.token) {
+      const rotated = data.token !== PRIVY_TOKEN;
       PRIVY_TOKEN = data.token;
       if (data.refresh_token) PRIVY_REFRESH_TOKEN = data.refresh_token;
 
@@ -284,7 +285,7 @@ async function refreshPrivySession() {
       }
 
       authFailed = false;
-      console.log(new Date().toISOString(), '[PRIVY AUTO-REFRESH SUCCESS] Token auto-rotated successfully');
+      console.log(new Date().toISOString(), `[PRIVY AUTO-REFRESH SUCCESS] rotated=${rotated} expiresIn=${jwtExpiresIn(PRIVY_TOKEN)}s`);
       if (dailyWs && dailyWs.readyState === WebSocket.OPEN) {
         dailyWs.send(JSON.stringify({ type: 'auth', token: PRIVY_TOKEN }));
       }
@@ -448,6 +449,47 @@ function notePeak() {
     peakBalance = currentUsdcBalance;
     saveBotState();
   }
+}
+
+// Order path: the trading session (vault, session, cash nonce) is kept warm in the background and
+// markets are prewarmed once when they appear, so a trade sends without waiting on HTTP.
+let sessionCache = null; // { session, at, nonceSpent }
+let sessionGen = 0;      // bumped when a buy consumes the nonce; older fetches are then discarded
+function spendNonce() { sessionGen++; if (sessionCache) sessionCache.nonceSpent = true; }
+function invalidateSession() { spendNonce(); fetchSession(); }
+function fetchSession() {
+  const gen = sessionGen;
+  return fetch(`https://daily.fun/chain-api/daily-markets/trading-session?authority=${AUTHORITY.toBase58()}`, {
+    headers: { 'Authorization': `Bearer ${PRIVY_TOKEN}`, 'Origin': CONFIG.dailyOrigin },
+    signal: AbortSignal.timeout(1500)
+  }).then(r => (r.ok ? r.json() : null)).then(j => {
+    const s = j?.tradingSession || null;
+    if (s && gen === sessionGen) sessionCache = { session: s, at: Date.now(), nonceSpent: false };
+    return s;
+  }).catch(() => null);
+}
+// A buy needs the current cash nonce; a sell signs none, so any cached session (same vault and session) will do.
+async function getSession(forSell = false) {
+  if (sessionCache && (forSell || (!sessionCache.nonceSpent && Date.now() - sessionCache.at < 30000))) return sessionCache.session;
+  return fetchSession();
+}
+const prewarmed = new Set();
+function prewarmMarket(marketPda) {
+  if (!marketPda || prewarmed.has(marketPda) || !PRIVY_TOKEN) return;
+  prewarmed.add(marketPda);
+  fetch('https://daily.fun/chain-api/daily-markets/trading-session/prewarm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${PRIVY_TOKEN}`, 'Origin': CONFIG.dailyOrigin },
+    body: JSON.stringify({ market: marketPda, authority: AUTHORITY.toBase58(), routeRevision: 1 }),
+    signal: AbortSignal.timeout(3000)
+  }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); }).catch((e) => {
+    prewarmed.delete(marketPda);
+    console.warn(new Date().toISOString(), `[PREWARM FAILED] ${marketPda} ${e.message}`);
+  });
+}
+
+function jwtExpiresIn(token) {
+  try { return Math.round(JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).exp - Date.now() / 1000); } catch { return null; }
 }
 
 function balanceFloor() {
@@ -726,6 +768,7 @@ function findPositionByRequest(requestId) {
 
 // 'executed' means accepted (state prepared, filledSize 0); only 'processed' confirms on-chain.
 function trackOrderResult(msg) {
+  if (msg.type === 'daily_markets_trade_processed') invalidateSession(); // a processed buy has consumed the cash nonce
   const [slug, pos] = findPositionByRequest(msg.requestId);
   if (!pos) return;
   const isSell = pos.pendingSell?.requestId === msg.requestId;
@@ -749,6 +792,7 @@ function trackOrderResult(msg) {
 }
 
 function trackOrderError(msg) {
+  invalidateSession();
   const [slug, pos] = findPositionByRequest(msg.requestId);
   if (!pos) return;
   if (pos.pendingSell?.requestId === msg.requestId) {
@@ -784,6 +828,7 @@ function handleDailyMessage(msg) {
         startMs,
         endMs
       });
+      if (m.symbol === 'BTC') prewarmMarket(m.marketPda);
 
       for (const o of m.outcomes || []) {
         if (o.book && o.tokenId) {
@@ -1160,41 +1205,8 @@ async function executeTrade(params) {
 
   const marketPda = new PublicKey(params.market.marketPda);
 
-  // Prewarm market settlement accounts
-  try {
-    await fetch('https://daily.fun/chain-api/daily-markets/trading-session/prewarm', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${PRIVY_TOKEN}`,
-        'Origin': CONFIG.dailyOrigin
-      },
-      body: JSON.stringify({
-        market: marketPda.toBase58(),
-        authority: AUTHORITY.toBase58(),
-        routeRevision: 1
-      })
-    });
-  } catch (e) {
-    console.warn(new Date().toISOString(), 'Prewarm error (ignoring):', e.message);
-  }
-
-  // Fetch fresh session context & nextNonce
-  let freshSession = null;
-  try {
-    const sRes = await fetch(`https://daily.fun/chain-api/daily-markets/trading-session?authority=${AUTHORITY.toBase58()}`, {
-      headers: {
-        'Authorization': `Bearer ${PRIVY_TOKEN}`,
-        'Origin': CONFIG.dailyOrigin
-      }
-    });
-    if (sRes.ok) {
-      const sJson = await sRes.json();
-      freshSession = sJson.tradingSession;
-    }
-  } catch (e) {
-    console.error(new Date().toISOString(), 'Failed to fetch fresh session:', e.message);
-  }
+  prewarmMarket(params.market.marketPda); // no-op when done at discovery
+  const freshSession = await getSession(); // cached; waits on HTTP only when the cache is cold
 
   if (!freshSession || !freshSession.cashSession?.enabled) {
     console.error(new Date().toISOString(), 'ABORTING TRADE: could not load cash session with active nextNonce');
@@ -1269,6 +1281,7 @@ async function executeTrade(params) {
   if (!CONFIG.paperMode) {
     if (dailyWs && dailyWs.readyState === WebSocket.OPEN) {
       dailyWs.send(JSON.stringify(tradeFrame));
+      spendNonce(); // refetched when the result arrives
     } else {
       console.error('Cannot send trade: Daily WS not open');
       return;
@@ -1338,16 +1351,11 @@ async function executeCashOut(params) {
     // The site signs sells with the u64 maximum: a real value caps the proceeds and truncates the fill.
     const maxNotional = 0xffffffffffffffffn;
 
-    const sRes = await fetch(`https://daily.fun/chain-api/daily-markets/trading-session?authority=${AUTHORITY.toBase58()}`, {
-      headers: { 'Authorization': `Bearer ${PRIVY_TOKEN}`, 'Origin': CONFIG.dailyOrigin },
-      signal: AbortSignal.timeout(1500)
-    });
-    if (!sRes.ok) {
-      console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} session HTTP ${sRes.status}`);
+    const freshSession = await getSession(true);
+    if (!freshSession) {
+      console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} trading session unavailable`);
       return;
     }
-    const sJson = await sRes.json();
-    const freshSession = sJson.tradingSession;
     if (!freshSession?.cashSession?.enabled) {
       console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} cash session disabled`);
       return;
@@ -1432,3 +1440,6 @@ initBinance();
 initDaily();
 setInterval(evaluateStrategy, 200);
 setInterval(refreshPrivySession, 20 * 60 * 1000);
+fetchSession();
+setInterval(fetchSession, 10000);
+console.log(new Date().toISOString(), `[PRIVY] loaded token expires in ${jwtExpiresIn(PRIVY_TOKEN)}s`);

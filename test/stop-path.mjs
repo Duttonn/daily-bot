@@ -122,6 +122,10 @@ const FAKE_FETCH = String.raw`
 const key = 'So11111111111111111111111111111111111111112';
 globalThis.fetch = async (url, opts) => {
   const body = opts?.body ? JSON.parse(opts.body) : {};
+  if (String(url).includes('trading-session')) { // session and prewarm: 300 ms each, like the real API
+    console.log('HARNESS_FETCH ' + JSON.stringify({ t: Date.now(), u: String(url).includes('prewarm') ? 'prewarm' : 'session' }));
+    await new Promise((r) => setTimeout(r, 300));
+  }
   let json = {};
   if (String(url).includes('trading-session?')) {
     json = { tradingSession: { vault: key, session: key, cashSession: { enabled: true, nextNonce: '5', programId: key, deploymentDomain: '00'.repeat(32),
@@ -206,6 +210,13 @@ check('sell_rejected: position closed after the retry', openCount(sellRej) === 0
 s = sells(noProc);
 check('no_processed: no second sell before 6 s', s.length >= 2 && s[1].t - s[0].t >= 5900);
 check('no_processed: prepared alone does not close the position', !noProc.out.split('\n').some((l, i, a) => l.includes('[CASHOUT FILLED]') && s.length < 2));
+
+const logMs = (out, tag) => { const l = out.split('\n').find((x) => x.includes(tag)); return l ? Date.parse(l.slice(0, 24)) : NaN; };
+const buyLag = partial.frames[0]?.t - logMs(partial.out, '[STOP PROBE]');
+const sellLag = sells(partial)[0]?.t - logMs(partial.out, '[STOP LOSS / CASH OUT TRIGGERED]');
+check(`latency: buy sent ${buyLag} ms after the signal, under 150 ms with 300 ms HTTP`, buyLag < 150);
+check(`latency: sell sent ${sellLag} ms after the trigger, under 150 ms`, sellLag < 150);
+check('latency: the market was prewarmed before the buy', partial.out.split('\n').some((l) => l.startsWith('HARNESS_FETCH') && l.includes('prewarm') && JSON.parse(l.slice(14)).t < partial.frames[0]?.t));
 
 check('floor: peak restored and kept at 700', floored.out.includes('peakBalance=700$') && floored.state?.peakBalance === 700);
 check('floor: entries paused at 455', floored.out.includes('<= floor 455.00$'));
