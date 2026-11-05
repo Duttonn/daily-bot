@@ -118,20 +118,21 @@ const CONFIG = {
   dailyUsdcAta: process.env.DAILY_USDC_ATA || 'DXpsZgXTarjRiSdMj3jeHodP2Rzv6x86SFohSiEv2Que', // Configurable in .env or auto-updated via cash_account_changed.v1
   paperMode: isPaperMode,
 
-  // M7 Continuous Edge Sniper Mathematical Strategy
-  windowRemainingMin: 50,  // Active continuous sniping window: 50s to 210s remaining
-  windowRemainingMax: 210,
-  minZScore: 0.60,         // Minimum statistical conviction Z >= 0.60 (eliminates 100% of live losses)
+  // M7 Calibrated Edge Sniper Mathematical Strategy
+  windowRemainingMin: 50,  // Active continuous sniping window: 50s to 130s remaining (safe zone around 120s)
+  windowRemainingMax: 130,
+  minZScore: 0.70,         // Minimum statistical conviction Z >= 0.70
   calmVolThreshold: 4.50,  // Allow trading unless extreme volatility (> 4.5 $/sqrt(s))
+  minSigmaFloor: 2.20,     // Volatility floor to prevent underestimating variance on 5m BTC
   cModel: 1.0,             // S6 forward model scaling factor
-  minEdgeMargin: 0.08,     // Edge margin floor (+8.0% net of fees)
+  minEdgeMargin: 0.10,     // Edge margin floor (+10.0% net of fees, per Claude C1)
   maxEntryAsk: 0.72,       // Maximum allowed entry ask (buy underpriced contracts only)
-  stopLossMaxQ: 0.15,      // Dynamic Stop-Loss survival probability threshold
+  stopLossMaxQ: 0.30,      // Dynamic Stop-Loss survival probability threshold (cuts if q <= 30% or d <= -5$)
   stopLossMinTau: 30,      // Minimum remaining seconds to execute stop-loss
   stopLossMaxTau: 90,      // Maximum remaining seconds to execute stop-loss
 
-  // Dynamic Capital Sizing
-  sizingFraction: parseFloat(process.env.SIZING_FRACTION || '0.12'), // Default 12% of live USDC balance per trade
+  // Capital Preservation Sizing
+  sizingFraction: parseFloat(process.env.SIZING_FRACTION || '0.05'), // 5% of vault base (Claude C5)
   maxSharesSafetyCap: 1000,    // Safety ceiling to absorb Level 1 + Level 2 liquidity depth
   minBalanceFloorRatio: 0.50,  // 50% capital drawdown stop-loss
   minBalanceFloorMinUsd: 5.0   // Absolute minimum floor to allow small wallets to trade
@@ -797,11 +798,12 @@ function evaluateStrategy() {
         continue;
       }
       if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau && !pos.cashoutAttempted) {
+        const sigmaEff = Math.max(sigmaM, CONFIG.minSigmaFloor || 2.20);
         const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
-        const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaM * Math.sqrt(Math.max(remainingSeconds, 1))));
-        if (qSurv <= CONFIG.stopLossMaxQ) {
+        const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(remainingSeconds, 1))));
+        if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0) {
           pos.cashoutAttempted = true;
-          console.log(new Date().toISOString(), `[STOP LOSS / CASH OUT TRIGGERED] ${slug} qSurv=${qSurv.toFixed(3)} (<= ${CONFIG.stopLossMaxQ}) relDelta=${relDelta.toFixed(1)}$ -> executing Cash Out`);
+          console.log(new Date().toISOString(), `[STOP LOSS / CASH OUT TRIGGERED] ${slug} qSurv=${qSurv.toFixed(3)} relDelta=${relDelta.toFixed(1)}$ -> executing Cash Out`);
           executeCashOut({
             slug,
             market: m,
@@ -817,7 +819,7 @@ function evaluateStrategy() {
 
     if (tradedRounds.has(slug)) continue;
 
-    // 2. Continuous Sniping Window: 50s to 210s remaining
+    // 2. Calibrated Sniping Window: 50s to 130s remaining (safe zone around 120s)
     if (remainingSeconds < CONFIG.windowRemainingMin || remainingSeconds > CONFIG.windowRemainingMax) {
       continue;
     }
@@ -827,9 +829,10 @@ function evaluateStrategy() {
 
     const d = currentBfPrice - f0;
     const tau = remainingSeconds;
-    const z = Math.abs(d) / (CONFIG.cModel * sigmaM * Math.sqrt(Math.max(tau, 1)));
+    const sigmaEff = Math.max(sigmaM, CONFIG.minSigmaFloor || 2.20);
+    const z = Math.abs(d) / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(tau, 1)));
 
-    // Statistical conviction filter: Z >= 0.60
+    // Statistical conviction filter: Z >= 0.70
     if (z < CONFIG.minZScore) {
       continue;
     }
@@ -912,8 +915,8 @@ async function executeTrade(params) {
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
   let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
 
-  // M7 Dynamic Edge Sizing: scale between 0.6x and 1.8x based on edge
-  const edgeMultiplier = Math.max(0.6, Math.min(1.8, 0.6 + 1.2 * ((params.edge - CONFIG.minEdgeMargin) / 0.15)));
+  // Capital Preservation Sizing: fixed 1.0x sizing (disabled 1.8x leverage per Claude C6)
+  const edgeMultiplier = 1.0;
   let targetSpend = Math.min(baseTargetSpend * edgeMultiplier, maxSafeSpend);
 
   // Determine base ask price and available shares (Level 1 + Level 2 depth)
