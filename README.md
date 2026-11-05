@@ -1,36 +1,39 @@
-# Daily.fun S6 Up/Down Trading Bot
+# Daily.fun M7 Calibrated Edge Sniper Trading Bot
 
-Production-grade automated trading bot for **Daily.fun** 5-minute Bitcoin prediction markets (`btc-updown-5m`), powered by the **S6 Forward Edge Model** (F20 timing window).
+Production-grade automated trading bot for **Daily.fun** 5-minute Bitcoin prediction markets (`btc-updown-5m`), powered by the **M7 Calibrated Edge Sniper Model** with dynamic Stop-Loss and capital preservation sizing.
 
 ---
 
 ## 1. Architecture & Strategy Overview
 
-### The Quantitative Inefficiency (F19 Mechanism)
-Daily.fun sets its orderbook option prices using a platform-assumed volatility formula:
+### The Quantitative Inefficiency
+Daily.fun sets its orderbook option prices using a platform-assumed volatility formula and updates its market-maker quotes with a 5 to 15 second lag after rapid spot moves. In calm or moderate regimes, the platform frequently misprices the winning contract:
 $$\sigma_{\text{house}} \approx 2.6 + 0.46 \times \sigma_{\text{market}}$$
 
-When the Bitcoin market enters a calm regime ($\sigma_M < 2.30\ \$/\sqrt{s}$), the platform expects $\sigma_{\text{house}} \approx 3.7 - 3.9\ \$/\sqrt{s}$. As a result, **Daily.fun significantly underprices the leading outcome 1 to 3 minutes before the round expires**.
-
-### The S6 Model (F20 Window)
-1. **Timing Window :** Evaluates exactly at **2 minutes before round close** ($\tau = 118\text{s} - 122\text{s}$ remaining).
-2. **Realized Volatility Filter :** Samples Binance Futures BTCUSDT tick prices on a 500 ms grid over the last 10 minutes. Only trades if $\sigma_M < 2.30\ \$/\sqrt{s}$.
-3. **Probability Calculation :**
-   $$q = \Phi\left(\frac{|d|}{\sigma_M \sqrt{\tau}}\right)$$
-   where $d = \text{BTC}_{\text{now}} - \text{BTC}_{\text{open}}$.
-4. **Edge Condition :** Buys when net edge exceeds 5 cents:
-   $$q - (\text{ask} + \text{fee}) \ge +0.05$$
-5. **Execution :** Signs on-chain Solana taker intent (v4) with root Cash authorization and routes order via Daily.fun matching engine WebSocket in $<70\text{ ms}$.
+### The M7 Calibrated Strategy
+1. **Calibrated Sniping Window :** Continuously scans for mispriced contracts between **50s and 130s remaining** ($\tau \in [50, 130]$). The upper bound is strictly capped at 130s to prevent entering prematurely on 3.5-minute brownian noise.
+2. **Effective Volatility & Conviction Filter ($Z \ge 0.70$) :**
+   $$\sigma_{\text{eff}} = \max(\sigma_M, 2.20\ \$/\sqrt{s})$$
+   $$Z = \frac{|d|}{\sigma_{\text{eff}} \sqrt{\tau}} \ge 0.70$$
+   where $d = \text{BTC}_{\text{now}} - \text{BTC}_{\text{open}}$. The volatility floor ($2.20\ \$/\sqrt{s}$) prevents artificial inflation of $Z$ and $q$ on micro-tick noise.
+3. **Probability & Net Edge Condition :**
+   $$q = \Phi(Z)$$
+   $$\text{Edge} = q - (\text{ask} + \text{fee}) \ge +10.0\% \quad (\text{with } \text{ask} \le 0.72\$)$$
+4. **Hybrid Dynamic Stop-Loss / Cash Out :**
+   Monitored between **30s and 90s remaining**. If the trade is compromised:
+   $$q_{\text{surv}} = \Phi\left(\frac{d_{\text{rel}}}{\sigma_{\text{eff}} \sqrt{\tau}}\right) \le 0.30 \quad \text{OR} \quad d_{\text{rel}} \le -5.0\$$$
+   The bot automatically triggers a taker sell at best bid into the Daily.fun book, cutting losses to preserve capital rather than taking a -100% loss at settlement.
+5. **Execution :** Signs on-chain Solana taker intent (v4) with root Cash authorization and routes orders via Daily.fun WebSocket in $<70\text{ ms}$.
 
 ---
 
-## 2. Dynamic Capital Sizing
+## 2. Capital Preservation & Sizing
 
-The bot automatically adapts to **any starting capital** deposited on Daily.fun:
-- **Allocation per trade :** `12%` of active live USDC balance.
-- **Drawdown Protection :** Dynamic balance floor preserving at least `50%` of initial capital (stop-loss).
+- **Allocation per trade :** `5%` of live USDC balance (aligned with conservative half-Kelly allocation).
+- **Leverage Multiplier :** Fixed at `1.0x` (dynamic multipliers disabled to protect the vault against asymmetric drawdowns).
+- **Drawdown Protection :** Dynamic balance floor preserving at least `50%` of initial capital.
 - **Minimum notional :** Strictly respects Daily.fun $1.00 minimum notional requirement.
-- **Depth Absorption :** Dynamically inspects Level 1 and Level 2 asks to absorb available book depth without exceeding slippage bounds.
+- **Depth Absorption :** Inspects Level 1 and Level 2 asks to absorb available book depth without exceeding slippage bounds.
 
 ### Capital Optimization & Liquidity Ceiling
 | Capital actif | Mise par trade (12%) | Parts achetées | Remplissage carnet |
