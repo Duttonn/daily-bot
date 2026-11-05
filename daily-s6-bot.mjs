@@ -134,7 +134,7 @@ const CONFIG = {
   // Capital Preservation Sizing
   sizingFraction: parseFloat(process.env.SIZING_FRACTION || '0.05'), // 5% of vault base (Claude C5)
   maxSharesSafetyCap: 1000,    // Safety ceiling to absorb Level 1 + Level 2 liquidity depth
-  minBalanceFloorRatio: 0.50,  // 50% capital drawdown stop-loss
+  trailingFloorDrawdown: 0.35, // New entries stop once the free balance is 35% below its peak (7-day p95 drawdown 24-32%)
   minBalanceFloorMinUsd: 5.0   // Absolute minimum floor to allow small wallets to trade
 };
 
@@ -439,7 +439,22 @@ let subscribedTokenIds = '';
 let authFailed = false;
 let currentUsdcBalance = null;
 let initialDetectedBalance = null;
+let peakBalance = null; // highest free balance seen, persisted; the trailing floor follows it
+let lastFloorLog = 0;
 let lastBalanceCheck = 0;
+
+function notePeak() {
+  if (currentUsdcBalance > (peakBalance || 0)) {
+    peakBalance = currentUsdcBalance;
+    saveBotState();
+  }
+}
+
+function balanceFloor() {
+  const configured = parseFloat(process.env.MIN_BALANCE_FLOOR_USD);
+  if (!isNaN(configured)) return configured;
+  return peakBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, peakBalance * (1 - CONFIG.trailingFloorDrawdown)) : 10.0;
+}
 let vaultUsdcAta = CONFIG.dailyUsdcAta;
 
 // Persistent State Management (D2 Fix)
@@ -469,6 +484,7 @@ function saveBotState() {
       tradedRounds: Array.from(tradedRounds),
       activePositions: serializedPositions,
       initialDetectedBalance,
+      peakBalance,
       savedAt: Date.now()
     };
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -499,7 +515,8 @@ function loadBotState() {
       if (data.initialDetectedBalance && !isNaN(data.initialDetectedBalance)) {
         initialDetectedBalance = data.initialDetectedBalance;
       }
-      console.log(new Date().toISOString(), `[STATE RESTORED] Loaded ${tradedRounds.size} traded rounds, ${activePositions.size} active positions, initialDetectedBalance=${initialDetectedBalance}$`);
+      if (data.peakBalance > 0) peakBalance = data.peakBalance;
+      console.log(new Date().toISOString(), `[STATE RESTORED] Loaded ${tradedRounds.size} traded rounds, ${activePositions.size} active positions, initialDetectedBalance=${initialDetectedBalance}$ peakBalance=${peakBalance}$`);
     }
   } catch (err) {
     console.error('Failed to load bot state:', err.message);
@@ -564,6 +581,7 @@ async function updateUsdcBalance() {
     }).then(r => r.json());
     if (res?.result?.value?.uiAmount !== undefined) {
       currentUsdcBalance = res.result.value.uiAmount;
+      notePeak();
       if (initialDetectedBalance === null && currentUsdcBalance > 0) {
         initialDetectedBalance = currentUsdcBalance;
         saveBotState();
@@ -802,6 +820,7 @@ function handleDailyMessage(msg) {
     if (atomic > 0) {
       const bal = atomic / 1_000_000;
       currentUsdcBalance = bal;
+      notePeak();
       if (initialDetectedBalance === null && currentUsdcBalance > 0) {
         initialDetectedBalance = currentUsdcBalance;
         saveBotState();
@@ -935,12 +954,12 @@ function evaluateStrategy() {
 
   updateUsdcBalance();
 
-  // Dynamic Stop-Loss Floor check (blocks NEW entries only)
-  const floorRatio = CONFIG.minBalanceFloorRatio;
-  const configuredFloor = process.env.MIN_BALANCE_FLOOR_USD ? parseFloat(process.env.MIN_BALANCE_FLOOR_USD) : null;
-  const dynamicFloor = (configuredFloor !== null && !isNaN(configuredFloor))
-    ? configuredFloor
-    : (initialDetectedBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, initialDetectedBalance * floorRatio) : 10.0);
+  // Trailing floor (blocks NEW entries only)
+  const dynamicFloor = balanceFloor();
+  if (currentUsdcBalance !== null && currentUsdcBalance <= dynamicFloor && now - lastFloorLog > 60000) {
+    lastFloorLog = now;
+    console.warn(new Date().toISOString(), `[FLOOR] balance ${currentUsdcBalance.toFixed(2)}$ <= floor ${dynamicFloor.toFixed(2)}$ (peak ${peakBalance?.toFixed(2)}$): new entries paused`);
+  }
   if (currentUsdcBalance === null || (now - lastBalanceCheck > 60000) || currentUsdcBalance <= dynamicFloor) {
     return;
   }
@@ -949,7 +968,7 @@ function evaluateStrategy() {
     lastHeartbeat = now;
     const activeBtc = Array.from(markets.values()).filter(m => m.symbol === 'BTC' && m.endMs > now);
     const nextRounds = activeBtc.map(m => `${m.slug} (${((m.endMs - now)/1000).toFixed(0)}s left)`).join(', ');
-    console.log(new Date().toISOString(), `[HEARTBEAT] bf=${currentBfPrice?.toFixed(1)} ticks=${priceHistory.length} sigmaM=${sigmaM ? sigmaM.toFixed(3) : 'warmup'} usdc=${currentUsdcBalance.toFixed(2)}$ authed=${isDailyAuthed} | ${nextRounds}`);
+    console.log(new Date().toISOString(), `[HEARTBEAT] bf=${currentBfPrice?.toFixed(1)} ticks=${priceHistory.length} sigmaM=${sigmaM ? sigmaM.toFixed(3) : 'warmup'} usdc=${currentUsdcBalance.toFixed(2)}$ floor=${dynamicFloor.toFixed(2)}$ authed=${isDailyAuthed} | ${nextRounds}`);
   }
 
   if (!sigmaM || sigmaM >= CONFIG.calmVolThreshold) {
@@ -1052,11 +1071,7 @@ async function executeTrade(params) {
     return;
   }
   const balance = currentUsdcBalance;
-  const floorRatio = CONFIG.minBalanceFloorRatio;
-  const configuredFloor = process.env.MIN_BALANCE_FLOOR_USD ? parseFloat(process.env.MIN_BALANCE_FLOOR_USD) : null;
-  const dynamicFloor = (configuredFloor !== null && !isNaN(configuredFloor))
-    ? configuredFloor
-    : (initialDetectedBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, initialDetectedBalance * floorRatio) : 10.0);
+  const dynamicFloor = balanceFloor();
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
   let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
 

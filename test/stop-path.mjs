@@ -133,8 +133,9 @@ globalThis.fetch = async (url, opts) => {
 };
 `;
 
-function runScenario(botSource, scenario, ms) {
+function runScenario(botSource, scenario, ms, seedState) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-path-'));
+  if (seedState) fs.writeFileSync(path.join(dir, 'bot-state.json'), JSON.stringify(seedState));
   const nm = path.join(dir, 'node_modules');
   fs.mkdirSync(path.join(nm, 'ws'), { recursive: true });
   fs.writeFileSync(path.join(nm, 'ws', 'index.js'), FAKE_WS);
@@ -173,11 +174,12 @@ if (argv[0] === '--build-probe') {
 }
 
 const bot = withProbeHooks(fs.readFileSync(argv[0] || path.join(ROOT, 'daily-s6-bot.mjs'), 'utf8'));
-const [partial, rejected, sellRej, noProc] = await Promise.all([
+const [partial, rejected, sellRej, noProc, floored] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
   runScenario(bot, 'sell_rejected', 13000),
   runScenario(bot, 'no_processed', 18000),
+  runScenario(bot, 'floor', 6000, { tradedRounds: [], activePositions: [], peakBalance: 700 }), // balance 400 < 0.65 x 700
 ]);
 
 const sells = (r) => r.frames.filter((f) => f.side === 'sell');
@@ -204,6 +206,10 @@ check('sell_rejected: position closed after the retry', openCount(sellRej) === 0
 s = sells(noProc);
 check('no_processed: no second sell before 6 s', s.length >= 2 && s[1].t - s[0].t >= 5900);
 check('no_processed: prepared alone does not close the position', !noProc.out.split('\n').some((l, i, a) => l.includes('[CASHOUT FILLED]') && s.length < 2));
+
+check('floor: peak restored and kept at 700', floored.out.includes('peakBalance=700$') && floored.state?.peakBalance === 700);
+check('floor: entries paused at 455', floored.out.includes('<= floor 455.00$'));
+check('floor: first balance becomes the peak, no pause', partial.state?.peakBalance === 400 && !partial.out.includes('[FLOOR]'));
 
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
