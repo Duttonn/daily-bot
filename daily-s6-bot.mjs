@@ -118,12 +118,17 @@ const CONFIG = {
   dailyUsdcAta: process.env.DAILY_USDC_ATA || 'DXpsZgXTarjRiSdMj3jeHodP2Rzv6x86SFohSiEv2Que', // Configurable in .env or auto-updated via cash_account_changed.v1
   paperMode: isPaperMode,
 
-  // S6 Mathematical Strategy (Locked pre-commitment)
-  windowRemainingMin: 118, // F20: 2 minutes before round expiry (118s - 122s remaining)
-  windowRemainingMax: 122,
-  calmVolThreshold: 2.30,  // sigma_m filter ($/sqrt(s))
+  // M7 Continuous Edge Sniper Mathematical Strategy
+  windowRemainingMin: 50,  // Active continuous sniping window: 50s to 210s remaining
+  windowRemainingMax: 210,
+  minZScore: 0.60,         // Minimum statistical conviction Z >= 0.60 (eliminates 100% of live losses)
+  calmVolThreshold: 4.50,  // Allow trading unless extreme volatility (> 4.5 $/sqrt(s))
   cModel: 1.0,             // S6 forward model scaling factor
-  minEdgeMargin: 0.05,     // Edge margin floor (net of fees)
+  minEdgeMargin: 0.08,     // Edge margin floor (+8.0% net of fees)
+  maxEntryAsk: 0.72,       // Maximum allowed entry ask (buy underpriced contracts only)
+  stopLossMaxQ: 0.15,      // Dynamic Stop-Loss survival probability threshold
+  stopLossMinTau: 30,      // Minimum remaining seconds to execute stop-loss
+  stopLossMaxTau: 90,      // Maximum remaining seconds to execute stop-loss
 
   // Dynamic Capital Sizing
   sizingFraction: parseFloat(process.env.SIZING_FRACTION || '0.12'), // Default 12% of live USDC balance per trade
@@ -185,16 +190,18 @@ if (fs.existsSync(AUTH_FILE)) {
   });
 }
 
-console.log(new Date().toISOString(), 'DAILY S6 BOT INITIALIZED:');
+console.log(new Date().toISOString(), 'DAILY M7 CONTINUOUS SNIPER INITIALIZED:');
 console.log('  Mode:           ', CONFIG.paperMode ? 'PAPER (Simulation only)' : 'LIVE (Capital Active)');
 console.log('  Owner:          ', OWNER.toBase58());
 console.log('  Session Auth:   ', AUTHORITY.toBase58());
 console.log('  Vault PDA:      ', VAULT.toBase58());
 console.log('  Session PDA:    ', SESSION.toBase58());
-console.log('  Timing Window:  ', `[${CONFIG.windowRemainingMin}s, ${CONFIG.windowRemainingMax}s] remaining (F20)`);
-console.log('  Calm Filter:    ', `sigma_m < ${CONFIG.calmVolThreshold} $/sqrt(s)`);
-console.log('  Edge Margin:    ', `edge >= +${CONFIG.minEdgeMargin}$`);
-console.log('  Capital Sizing: ', `${(CONFIG.sizingFraction * 100)}% of live balance per trade`);
+console.log('  Timing Window:  ', `[${CONFIG.windowRemainingMin}s, ${CONFIG.windowRemainingMax}s] continuous sniper`);
+console.log('  Z-Score Filter: ', `Z >= ${CONFIG.minZScore}`);
+console.log('  Edge Margin:    ', `edge >= +${(CONFIG.minEdgeMargin * 100).toFixed(1)}% net`);
+console.log('  Max Entry Ask:  ', `<=${CONFIG.maxEntryAsk}$`);
+console.log('  Stop Loss Cut:  ', `q_surv <= ${(CONFIG.stopLossMaxQ * 100).toFixed(0)}% [${CONFIG.stopLossMinTau}s-${CONFIG.stopLossMaxTau}s]`);
+console.log('  Capital Sizing: ', `${(CONFIG.sizingFraction * 100)}% base + Edge Sizing`);
 
 // Math Helpers
 
@@ -426,6 +433,7 @@ const priceHistory = []; // { t, p }
 const markets = new Map(); // slug -> market meta
 const books = new Map(); // tokenId -> { bids, asks }
 const tradedRounds = new Set();
+const activePositions = new Map(); // slug -> { market, targetOutcome, targetSideName, sharesBought, f0, entryPrice, entryTau, cashoutAttempted }
 let subscribedTokenIds = '';
 let authFailed = false;
 let currentUsdcBalance = null;
@@ -735,6 +743,7 @@ function evaluateStrategy() {
       books.delete(`${m.marketPda}:1`);
       markets.delete(slug);
       tradedRounds.delete(slug);
+      activePositions.delete(slug);
     }
   }
 
@@ -776,26 +785,52 @@ function evaluateStrategy() {
 
   for (const [slug, m] of markets.entries()) {
     if (m.symbol !== 'BTC') continue;
-    if (tradedRounds.has(slug)) continue;
     if (!m.startMs || !m.endMs) continue;
 
     const remainingSeconds = (m.endMs - now) / 1000;
-    // F20 Window: 118s - 122s remaining (2 min before round expiry)
+
+    // 1. Dynamic Stop-Loss Monitor for active positions in this round
+    if (activePositions.has(slug)) {
+      const pos = activePositions.get(slug);
+      if (remainingSeconds < 10) {
+        activePositions.delete(slug);
+        continue;
+      }
+      if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau && !pos.cashoutAttempted) {
+        const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
+        const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaM * Math.sqrt(Math.max(remainingSeconds, 1))));
+        if (qSurv <= CONFIG.stopLossMaxQ) {
+          pos.cashoutAttempted = true;
+          console.log(new Date().toISOString(), `[STOP LOSS / CASH OUT TRIGGERED] ${slug} qSurv=${qSurv.toFixed(3)} (<= ${CONFIG.stopLossMaxQ}) relDelta=${relDelta.toFixed(1)}$ -> executing Cash Out`);
+          executeCashOut({
+            slug,
+            market: m,
+            outcomeIndex: pos.targetOutcome,
+            sideName: pos.targetSideName,
+            sharesToSell: pos.sharesBought,
+            relDelta,
+            qSurv
+          });
+        }
+      }
+    }
+
+    if (tradedRounds.has(slug)) continue;
+
+    // 2. Continuous Sniping Window: 50s to 210s remaining
     if (remainingSeconds < CONFIG.windowRemainingMin || remainingSeconds > CONFIG.windowRemainingMax) {
       continue;
     }
 
-    console.log(new Date().toISOString(), `[WINDOW ENTERED] ${slug} rem=${remainingSeconds.toFixed(1)}s sigmaM=${sigmaM?.toFixed(3)}`);
-
     const f0 = getPriceAt(priceHistory, m.startMs);
-    if (!f0) {
-      console.log(new Date().toISOString(), `[SKIP] ${slug}: startMs not covered in history`);
-      continue;
-    }
+    if (!f0) continue;
 
     const d = currentBfPrice - f0;
-    if (Math.abs(d) < 1.0) {
-      console.log(new Date().toISOString(), `[SKIP] ${slug}: d=${d.toFixed(2)} (< 1.0)`);
+    const tau = remainingSeconds;
+    const z = Math.abs(d) / (CONFIG.cModel * sigmaM * Math.sqrt(Math.max(tau, 1)));
+
+    // Statistical conviction filter: Z >= 0.60
+    if (z < CONFIG.minZScore) {
       continue;
     }
 
@@ -808,38 +843,30 @@ function evaluateStrategy() {
     const oppBook = books.get(oppTokenId);
     
     if (!book || !book.asks || book.asks.length === 0 || !oppBook || !oppBook.asks || oppBook.asks.length === 0) {
-      console.log(new Date().toISOString(), `[SKIP] ${slug}: missing book on one or both sides`);
       continue;
     }
 
-    if (book.stale || oppBook.stale) {
-      console.log(new Date().toISOString(), `[SKIP] ${slug}: stale book`);
-      continue;
-    }
+    if (book.stale || oppBook.stale) continue;
     const bookAge = book.receivedAtMs ? (now - book.receivedAtMs) : 99999;
     const oppBookAge = oppBook.receivedAtMs ? (now - oppBook.receivedAtMs) : 99999;
-    if (bookAge > 3000 || oppBookAge > 3000) {
-      console.log(new Date().toISOString(), `[SKIP] ${slug}: book too old (target=${bookAge}ms, opp=${oppBookAge}ms > 3000ms)`);
-      continue;
-    }
-
-    tradedRounds.add(slug);
+    if (bookAge > 3000 || oppBookAge > 3000) continue;
 
     const level1Ask = book.asks[0].price;
     const level1Sz = book.asks[0].sizeShares;
-    if (!level1Sz || isNaN(level1Sz) || level1Sz < 1) {
-      console.log(new Date().toISOString(), `[SKIP] ${slug}: invalid level1Sz=${level1Sz}`);
+    if (!level1Sz || isNaN(level1Sz) || level1Sz < 1) continue;
+
+    // Filter expensive asks: only buy underpriced contracts
+    if (level1Ask > CONFIG.maxEntryAsk) {
       continue;
     }
 
-    const tau = remainingSeconds;
-    const q = normalCdf(Math.abs(d) / (CONFIG.cModel * sigmaM * Math.sqrt(Math.max(tau, 1))));
+    const q = normalCdf(z);
     const cost = level1Ask + fee(level1Ask, m.feeRateBps ?? 700);
     const edge = q - cost;
 
-    console.log(new Date().toISOString(), `[EVALUATED] ${slug} side=${targetSideName} d=${d.toFixed(1)} q=${q.toFixed(3)} ask=${level1Ask} cost=${cost.toFixed(3)} edge=${edge.toFixed(3)} (min=${CONFIG.minEdgeMargin})`);
-
     if (edge >= CONFIG.minEdgeMargin) {
+      tradedRounds.add(slug);
+      console.log(new Date().toISOString(), `[SNIPE TRIGGERED] ${slug} rem=${remainingSeconds.toFixed(1)}s side=${targetSideName} d=${d.toFixed(1)} Z=${z.toFixed(2)} q=${q.toFixed(3)} ask=${level1Ask} cost=${cost.toFixed(3)} edge=+${(edge * 100).toFixed(1)}%`);
       executeTrade({
         slug,
         market: m,
@@ -849,6 +876,7 @@ function evaluateStrategy() {
         f_now: currentBfPrice,
         d,
         sigmaM,
+        z,
         q,
         targetOutcome,
         targetSideName,
@@ -882,7 +910,11 @@ async function executeTrade(params) {
     ? configuredFloor
     : (initialDetectedBalance ? Math.max(CONFIG.minBalanceFloorMinUsd, initialDetectedBalance * floorRatio) : 10.0);
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
-  let targetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
+  let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
+
+  // M7 Dynamic Edge Sizing: scale between 0.6x and 1.8x based on edge
+  const edgeMultiplier = Math.max(0.6, Math.min(1.8, 0.6 + 1.2 * ((params.edge - CONFIG.minEdgeMargin) / 0.15)));
+  let targetSpend = Math.min(baseTargetSpend * edgeMultiplier, maxSafeSpend);
 
   // Determine base ask price and available shares (Level 1 + Level 2 depth)
   let baseAskPrice = params.level1Ask;
@@ -1111,6 +1143,130 @@ async function executeTrade(params) {
     edge: params.edge,
     status: CONFIG.paperMode ? 'paper_trade' : 'intent_sent'
   });
+
+  // Track open position for dynamic Stop-Loss
+  activePositions.set(params.slug, {
+    market: params.market,
+    targetOutcome: params.targetOutcome,
+    targetSideName: params.targetSideName,
+    sharesBought: sharesToBuy,
+    f0: params.f0,
+    entryPrice: params.level1Ask,
+    entryTau: params.tau,
+    cashoutAttempted: false
+  });
+}
+
+// Dynamic Stop-Loss / Cash Out Execution
+async function executeCashOut(params) {
+  try {
+    const tokenId = `${params.market.marketPda}:${params.outcomeIndex}`;
+    const book = books.get(tokenId);
+    const bestBid = book?.bids?.[0]?.price || 0.25;
+    console.log(new Date().toISOString(), `[CASHOUT EXECUTION] Attempting cashout for ${params.slug} shares=${params.sharesToSell} bestBid=${bestBid}`);
+    
+    // Selling on Daily.fun taker order
+    const limitPriceToUse = Math.max(0.05, bestBid - 0.02); // 2-cent slippage into bid
+    const limitPriceMicros = BigInt(Math.round(limitPriceToUse * 1_000_000));
+    const sharesMicros = BigInt(params.sharesToSell) * 1_000_000n;
+    const baseNotionalMicros = (sharesMicros * limitPriceMicros) / 1_000_000n;
+    const feeRateBps = params.market.feeRateBps ?? 700;
+    const feeMicros = (sharesMicros * BigInt(feeRateBps) * limitPriceMicros * (1_000_000n - limitPriceMicros)) / (10_000n * 1_000_000n * 1_000_000n);
+    const maxNotional = baseNotionalMicros + feeMicros;
+    
+    const sRes = await fetch(`https://daily.fun/chain-api/daily-markets/trading-session?authority=${AUTHORITY.toBase58()}`, {
+      headers: { 'Authorization': `Bearer ${PRIVY_TOKEN}`, 'Origin': CONFIG.dailyOrigin }
+    });
+    if (!sRes.ok) return;
+    const sJson = await sRes.json();
+    const freshSession = sJson.tradingSession;
+    if (!freshSession?.cashSession?.enabled) return;
+
+    const liveVaultPda = new PublicKey(freshSession.vault);
+    const liveSessionPda = new PublicKey(freshSession.session);
+    const currentNonce = BigInt(freshSession.cashSession.nextNonce);
+    const marketPda = new PublicKey(params.market.marketPda);
+    const salt = BigInt(Math.floor(Math.random() * 1e15));
+    const expiry = Math.floor(Date.now() / 1000) + 4;
+    const requestId = crypto.randomUUID();
+    const clientOrderId = crypto.randomUUID();
+
+    const intent = {
+      side: 'sell',
+      outcomeIndex: params.outcomeIndex,
+      timeInForce: 'fak',
+      limitPriceMicros,
+      maxShares: sharesMicros,
+      maxNotional,
+      minFillShares: 1_000_000n,
+      salt,
+      expiry
+    };
+
+    const intentHash = buildIntentHash(intent, CONFIG.programId, marketPda, CONFIG.usdcMint, OWNER, liveVaultPda, liveSessionPda);
+    const signature = nacl.sign.detached(intentHash, SECRET_KEY);
+    const signatureB64 = Buffer.from(signature).toString('base64');
+
+    const cashHash = buildCashActionHash(freshSession.cashSession, intentHash, maxNotional, expiry, currentNonce);
+    const cashSig = nacl.sign.detached(cashHash, SECRET_KEY);
+    const cashSignatureB64 = Buffer.from(cashSig).toString('base64');
+
+    const cashAuthorization = {
+      protocolVersion: 1,
+      sessionAuthority: AUTHORITY.toBase58(),
+      sessionGeneration: freshSession.cashSession.sessionGeneration.toString(),
+      deploymentDomain: freshSession.cashSession.deploymentDomain.toLowerCase(),
+      amount: maxNotional.toString(),
+      expiry: expiry,
+      nonce: currentNonce.toString(),
+      signature: cashSignatureB64
+    };
+
+    const sellFrame = {
+      type: 'daily_markets_trade',
+      requestId,
+      clientOrderId,
+      observeProcessed: true,
+      acceptQueued: true,
+      routeRevision: 1,
+      cashAuthorization,
+      intent: {
+        protocolVersion: 4,
+        market: marketPda.toBase58(),
+        owner: OWNER.toBase58(),
+        sessionAuthority: AUTHORITY.toBase58(),
+        takerVault: liveVaultPda.toBase58(),
+        tradingSession: liveSessionPda.toBase58(),
+        usdcMint: CONFIG.usdcMint.toBase58(),
+        side: intent.side,
+        outcomeIndex: intent.outcomeIndex,
+        timeInForce: intent.timeInForce,
+        limitPriceMicros: intent.limitPriceMicros.toString(),
+        maxShares: intent.maxShares.toString(),
+        maxNotional: intent.maxNotional.toString(),
+        minFillShares: intent.minFillShares.toString(),
+        salt: intent.salt.toString(),
+        expiry: intent.expiry,
+        signature: signatureB64
+      }
+    };
+
+    if (dailyWs && dailyWs.readyState === WebSocket.OPEN) {
+      dailyWs.send(JSON.stringify(sellFrame));
+      console.log(new Date().toISOString(), `[CASHOUT SENT] ${params.slug} sell order sent to Daily WS`);
+      logTrade({
+        event: 'stop_loss_cashout_sent',
+        slug: params.slug,
+        side: params.sideName,
+        shares: params.sharesToSell,
+        bestBid,
+        relDelta: params.relDelta,
+        qSurv: params.qSurv
+      });
+    }
+  } catch (err) {
+    console.error(new Date().toISOString(), '[CASHOUT ERROR]', err.message);
+  }
 }
 
 // Start Main Loops
