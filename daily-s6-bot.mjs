@@ -862,6 +862,7 @@ function trackOrderError(msg) {
   if (pos.pendingSell?.requestId === msg.requestId) {
     console.warn(new Date().toISOString(), `[CASHOUT REJECTED] ${slug} code=${msg.code}, will retry`);
     pos.pendingSell = null;
+    pos.lastCashoutAttemptMs = Date.now() - 1200; // nothing is pending after a rejection: retry 0.3 s later, not 1.5 s
   } else {
     console.warn(new Date().toISOString(), `[BUY REJECTED] ${slug} code=${msg.code}, no position opened`);
     activePositions.delete(slug);
@@ -1427,7 +1428,7 @@ async function executeCashOut(params) {
     
     // Selling on Daily.fun taker order
     const failedAttempts = Math.max(0, (params.pos?.cashoutAttempts || 1) - 1);
-    const limitPriceToUse = Math.max(0.05, bestBid - 0.02 - 0.02 * failedAttempts); // 2 c into the bid, 2 c more per failed attempt (a stale bid cannot block the exit)
+    const limitPriceToUse = Math.max(0.05, bestBid - 0.05 - 0.02 * failedAttempts); // 5 c into the bid, 2 c more per failed attempt: the sale fills at the book, the limit only lets a moving bid through
     const limitPriceMicros = BigInt(Math.round(limitPriceToUse * 1_000_000));
     const sharesMicros = BigInt(Math.round(params.sharesToSell * 1_000_000));
     // The site signs sells with the u64 maximum: a real value caps the proceeds and truncates the fill.
