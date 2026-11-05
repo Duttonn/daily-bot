@@ -20,10 +20,12 @@ $$\sigma_{\text{house}} \approx 2.6 + 0.46 \times \sigma_{\text{market}}$$
    $$q = \Phi(Z)$$
    $$\text{Edge} = q - (\text{ask} + \text{fee}) \ge +10.0\% \quad (\text{with } \text{ask} \le 0.72\$)$$
 4. **Hybrid Dynamic Stop-Loss / Cash Out :**
-   Monitored between **30s and 90s remaining**. If the trade is compromised:
+   Monitored between **30s and 90s remaining**, executed unconditionally before entry gating:
    $$q_{\text{surv}} = \Phi\left(\frac{d_{\text{rel}}}{\sigma_{\text{eff}} \sqrt{\tau}}\right) \le 0.30 \quad \text{OR} \quad d_{\text{rel}} \le -5.0\$$$
    The bot automatically triggers a taker sell at best bid into the Daily.fun book, cutting losses to preserve capital rather than taking a -100% loss at settlement.
-5. **Execution :** Signs on-chain Solana taker intent (v4) with root Cash authorization and routes orders via Daily.fun WebSocket in $<70\text{ ms}$.
+5. **Persistent State Management (`bot-state.json`) :**
+   Open positions, traded rounds, and high-watermark capital floors are persisted to disk to survive process restarts without losing stop-loss tracking or double-spending.
+6. **Execution :** Signs on-chain Solana taker intent (v4) with root Cash authorization and routes orders via Daily.fun WebSocket in $<70\text{ ms}$.
 
 ---
 

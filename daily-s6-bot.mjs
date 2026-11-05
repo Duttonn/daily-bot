@@ -442,6 +442,71 @@ let initialDetectedBalance = null;
 let lastBalanceCheck = 0;
 let vaultUsdcAta = CONFIG.dailyUsdcAta;
 
+// Persistent State Management (D2 Fix)
+const STATE_FILE = path.join(process.cwd(), 'bot-state.json');
+
+function saveBotState() {
+  try {
+    const serializedPositions = [];
+    for (const [slug, pos] of activePositions.entries()) {
+      serializedPositions.push([
+        slug,
+        {
+          targetOutcome: pos.targetOutcome,
+          targetSideName: pos.targetSideName,
+          sharesBought: pos.sharesBought,
+          f0: pos.f0,
+          entryPrice: pos.entryPrice,
+          entryTau: pos.entryTau,
+          cashoutAttempted: pos.cashoutAttempted,
+          marketPda: pos.market?.marketPda || pos.marketPda,
+          marketEndMs: pos.market?.endMs || pos.marketEndMs,
+          marketFeeRateBps: pos.market?.feeRateBps || pos.marketFeeRateBps
+        }
+      ]);
+    }
+    const state = {
+      tradedRounds: Array.from(tradedRounds),
+      activePositions: serializedPositions,
+      initialDetectedBalance,
+      savedAt: Date.now()
+    };
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  } catch (err) {
+    console.error('Failed to save bot state:', err.message);
+  }
+}
+
+function loadBotState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      if (Array.isArray(data.tradedRounds)) {
+        for (const r of data.tradedRounds) tradedRounds.add(r);
+      }
+      if (Array.isArray(data.activePositions)) {
+        for (const [slug, pos] of data.activePositions) {
+          activePositions.set(slug, {
+            ...pos,
+            market: {
+              marketPda: pos.marketPda,
+              endMs: pos.marketEndMs,
+              feeRateBps: pos.marketFeeRateBps
+            }
+          });
+        }
+      }
+      if (data.initialDetectedBalance && !isNaN(data.initialDetectedBalance)) {
+        initialDetectedBalance = data.initialDetectedBalance;
+      }
+      console.log(new Date().toISOString(), `[STATE RESTORED] Loaded ${tradedRounds.size} traded rounds, ${activePositions.size} active positions, initialDetectedBalance=${initialDetectedBalance}$`);
+    }
+  } catch (err) {
+    console.error('Failed to load bot state:', err.message);
+  }
+}
+loadBotState();
+
 async function resolveVaultUsdcAta() {
   if (vaultUsdcAta) return vaultUsdcAta;
   try {
@@ -501,10 +566,12 @@ async function updateUsdcBalance() {
       currentUsdcBalance = res.result.value.uiAmount;
       if (initialDetectedBalance === null && currentUsdcBalance > 0) {
         initialDetectedBalance = currentUsdcBalance;
+        saveBotState();
         console.log(new Date().toISOString(), `[CAPITAL ACTIF DÉTECTÉ] Solde initial: ${initialDetectedBalance.toFixed(2)}$ | Sizing proportionnel: ${(CONFIG.sizingFraction * 100)}% par trade`);
       } else if (initialDetectedBalance !== null && currentUsdcBalance > initialDetectedBalance * 1.15) {
         console.log(new Date().toISOString(), `[DÉPÔT DÉTECTÉ] Solde rehaussé: ${initialDetectedBalance.toFixed(2)}$ -> ${currentUsdcBalance.toFixed(2)}$ | Floor stop-loss ajusté`);
         initialDetectedBalance = currentUsdcBalance;
+        saveBotState();
       }
       lastBalanceCheck = now;
     }
@@ -692,10 +759,12 @@ function handleDailyMessage(msg) {
       currentUsdcBalance = bal;
       if (initialDetectedBalance === null && currentUsdcBalance > 0) {
         initialDetectedBalance = currentUsdcBalance;
+        saveBotState();
         console.log(new Date().toISOString(), `[CAPITAL ACTIF DÉTECTÉ] Solde initial: ${initialDetectedBalance.toFixed(2)}$ | Sizing proportionnel: ${(CONFIG.sizingFraction * 100)}% par trade`);
       } else if (initialDetectedBalance !== null && currentUsdcBalance > initialDetectedBalance * 1.15) {
         console.log(new Date().toISOString(), `[DÉPÔT DÉTECTÉ] Solde rehaussé: ${initialDetectedBalance.toFixed(2)}$ -> ${currentUsdcBalance.toFixed(2)}$ | Floor stop-loss ajusté`);
         initialDetectedBalance = currentUsdcBalance;
+        saveBotState();
       }
       lastBalanceCheck = Date.now();
       console.log(new Date().toISOString(), `[CASH EVENT] Daily USDC balance: ${currentUsdcBalance.toFixed(2)}$ (vault: ${msg.vault || 'n/a'})`);
@@ -744,13 +813,58 @@ function evaluateStrategy() {
       books.delete(`${m.marketPda}:1`);
       markets.delete(slug);
       tradedRounds.delete(slug);
-      activePositions.delete(slug);
+      if (activePositions.has(slug)) {
+        activePositions.delete(slug);
+        saveBotState();
+      }
     }
   }
 
   if (!currentBfPrice) return;
   if (now - lastBfTickMs > 3000) return;
 
+  const sigmaM = calculateRealizedVol(priceHistory, 600, 500);
+  const sigmaEff = Math.max(sigmaM || 2.20, CONFIG.minSigmaFloor || 2.20);
+
+  // =========================================================================
+  // 1. D1 FIX: STOP-LOSS / CASH OUT FIRST FOR ALL OPEN POSITIONS
+  // Always executed regardless of volatility or account balance floor!
+  // =========================================================================
+  for (const [slug, pos] of activePositions.entries()) {
+    const m = pos.market || markets.get(slug);
+    const endMs = m?.endMs || pos.marketEndMs;
+    if (!endMs) continue;
+    const remainingSeconds = (endMs - now) / 1000;
+
+    if (remainingSeconds < 10) {
+      activePositions.delete(slug);
+      saveBotState();
+      continue;
+    }
+
+    if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau && !pos.cashoutAttempted) {
+      const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
+      const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(remainingSeconds, 1))));
+      if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0) {
+        pos.cashoutAttempted = true;
+        saveBotState();
+        console.log(new Date().toISOString(), `[STOP LOSS / CASH OUT TRIGGERED] ${slug} qSurv=${qSurv.toFixed(3)} relDelta=${relDelta.toFixed(1)}$ -> executing Cash Out`);
+        executeCashOut({
+          slug,
+          market: m,
+          outcomeIndex: pos.targetOutcome,
+          sideName: pos.targetSideName,
+          sharesToSell: pos.sharesBought,
+          relDelta,
+          qSurv
+        });
+      }
+    }
+  }
+
+  // =========================================================================
+  // 2. GATES FOR NEW ENTRIES ONLY
+  // =========================================================================
   if (sessionExpirySec && now / 1000 >= sessionExpirySec) {
     if (now - lastExpiredWarning > 30000) {
       lastExpiredWarning = now;
@@ -761,7 +875,7 @@ function evaluateStrategy() {
 
   updateUsdcBalance();
 
-  // Dynamic Stop-Loss Floor check
+  // Dynamic Stop-Loss Floor check (blocks NEW entries only)
   const floorRatio = CONFIG.minBalanceFloorRatio;
   const configuredFloor = process.env.MIN_BALANCE_FLOOR_USD ? parseFloat(process.env.MIN_BALANCE_FLOOR_USD) : null;
   const dynamicFloor = (configuredFloor !== null && !isNaN(configuredFloor))
@@ -771,8 +885,6 @@ function evaluateStrategy() {
     return;
   }
 
-  const sigmaM = calculateRealizedVol(priceHistory, 600, 500);
-
   if (now - lastHeartbeat > 10000) {
     lastHeartbeat = now;
     const activeBtc = Array.from(markets.values()).filter(m => m.symbol === 'BTC' && m.endMs > now);
@@ -781,7 +893,7 @@ function evaluateStrategy() {
   }
 
   if (!sigmaM || sigmaM >= CONFIG.calmVolThreshold) {
-    return; // Volatility too high or warmup in progress
+    return; // Volatility too high or warmup in progress for new entries
   }
 
   for (const [slug, m] of markets.entries()) {
@@ -789,34 +901,6 @@ function evaluateStrategy() {
     if (!m.startMs || !m.endMs) continue;
 
     const remainingSeconds = (m.endMs - now) / 1000;
-
-    // 1. Dynamic Stop-Loss Monitor for active positions in this round
-    if (activePositions.has(slug)) {
-      const pos = activePositions.get(slug);
-      if (remainingSeconds < 10) {
-        activePositions.delete(slug);
-        continue;
-      }
-      if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau && !pos.cashoutAttempted) {
-        const sigmaEff = Math.max(sigmaM, CONFIG.minSigmaFloor || 2.20);
-        const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
-        const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(remainingSeconds, 1))));
-        if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0) {
-          pos.cashoutAttempted = true;
-          console.log(new Date().toISOString(), `[STOP LOSS / CASH OUT TRIGGERED] ${slug} qSurv=${qSurv.toFixed(3)} relDelta=${relDelta.toFixed(1)}$ -> executing Cash Out`);
-          executeCashOut({
-            slug,
-            market: m,
-            outcomeIndex: pos.targetOutcome,
-            sideName: pos.targetSideName,
-            sharesToSell: pos.sharesBought,
-            relDelta,
-            qSurv
-          });
-        }
-      }
-    }
-
     if (tradedRounds.has(slug)) continue;
 
     // 2. Calibrated Sniping Window: 50s to 130s remaining (safe zone around 120s)
@@ -869,6 +953,7 @@ function evaluateStrategy() {
 
     if (edge >= CONFIG.minEdgeMargin) {
       tradedRounds.add(slug);
+      saveBotState();
       console.log(new Date().toISOString(), `[SNIPE TRIGGERED] ${slug} rem=${remainingSeconds.toFixed(1)}s side=${targetSideName} d=${d.toFixed(1)} Z=${z.toFixed(2)} q=${q.toFixed(3)} ask=${level1Ask} cost=${cost.toFixed(3)} edge=+${(edge * 100).toFixed(1)}%`);
       executeTrade({
         slug,
@@ -1158,6 +1243,7 @@ async function executeTrade(params) {
     entryTau: params.tau,
     cashoutAttempted: false
   });
+  saveBotState();
 }
 
 // Dynamic Stop-Loss / Cash Out Execution
