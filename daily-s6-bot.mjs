@@ -699,6 +699,50 @@ function updateSubscriptions() {
   }
 }
 
+function findPositionByRequest(requestId) {
+  for (const [slug, pos] of activePositions.entries()) {
+    if (pos.buyRequestId === requestId || pos.pendingSell?.requestId === requestId) return [slug, pos];
+  }
+  return [null, null];
+}
+
+// 'executed' means accepted (state prepared, filledSize 0); only 'processed' confirms on-chain.
+function trackOrderResult(msg) {
+  const [slug, pos] = findPositionByRequest(msg.requestId);
+  if (!pos) return;
+  const isSell = pos.pendingSell?.requestId === msg.requestId;
+  if (msg.type === 'daily_markets_trade_executed') {
+    const accepted = Number(msg.execution?.acceptedSize) / 1_000_000;
+    if (!(accepted > 0)) return;
+    if (isSell) pos.pendingSell.acceptedShares = accepted;
+    else pos.sharesBought = accepted;
+  } else if (isSell) {
+    const sold = pos.pendingSell.acceptedShares ?? pos.pendingSell.shares;
+    pos.pendingSell = null;
+    pos.sharesBought = Math.max(0, pos.sharesBought - sold);
+    if (pos.sharesBought < 0.000001) {
+      console.log(new Date().toISOString(), `[CASHOUT FILLED] ${slug} sold=${sold} position closed`);
+      activePositions.delete(slug);
+    } else {
+      console.log(new Date().toISOString(), `[CASHOUT PARTIAL] ${slug} sold=${sold} remaining=${pos.sharesBought}`);
+    }
+  }
+  saveBotState();
+}
+
+function trackOrderError(msg) {
+  const [slug, pos] = findPositionByRequest(msg.requestId);
+  if (!pos) return;
+  if (pos.pendingSell?.requestId === msg.requestId) {
+    console.warn(new Date().toISOString(), `[CASHOUT REJECTED] ${slug} code=${msg.code}, will retry`);
+    pos.pendingSell = null;
+  } else {
+    console.warn(new Date().toISOString(), `[BUY REJECTED] ${slug} code=${msg.code}, no position opened`);
+    activePositions.delete(slug);
+  }
+  saveBotState();
+}
+
 function handleDailyMessage(msg) {
   if (msg.type === 'updown_markets') {
     for (const m of msg.markets || []) {
@@ -747,18 +791,7 @@ function handleDailyMessage(msg) {
   } else if (msg.type === 'daily_markets_trade_processed' || msg.type === 'daily_markets_trade_executed') {
     console.log(new Date().toISOString(), '[TRADE SUCCESS] Daily trade executed:', JSON.stringify(msg));
     logTrade({ event: 'trade_executed', details: msg });
-    const ex = msg.execution || msg.details?.execution;
-    if (ex?.side === 'sell' && ex?.market) {
-      for (const [slug, pos] of activePositions.entries()) {
-        const pda = pos.market?.marketPda || pos.marketPda;
-        if (pda === ex.market) {
-          console.log(new Date().toISOString(), `[CASHOUT FILLED] Closing position ${slug} after confirmed on-chain sell fill`);
-          activePositions.delete(slug);
-          saveBotState();
-          break;
-        }
-      }
-    }
+    trackOrderResult(msg);
     updateUsdcBalance();
   } else if (msg.type === 'authed') {
     isDailyAuthed = true;
@@ -791,6 +824,7 @@ function handleDailyMessage(msg) {
     }
     console.error(new Date().toISOString(), 'DAILY ERROR MSG:', JSON.stringify(msg), 'BOOK SNAPSHOT:', JSON.stringify(bookSnapshots));
     logTrade({ event: 'daily_error', code: msg.code, message: msg.message, details: msg, bookSnapshot: bookSnapshots });
+    if (msg.requestId) trackOrderError(msg);
     if (msg.message === 'bad token') {
       authFailed = true;
       isDailyAuthed = false;
@@ -866,7 +900,9 @@ function evaluateStrategy() {
       const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(remainingSeconds, 1))));
       if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0) {
         const lastAttempt = pos.lastCashoutAttemptMs || 0;
-        if (now - lastAttempt >= 1500) { // Retry every 1.5s until filled or tau < 10s
+        const sellPending = pos.pendingSell && now - pos.pendingSell.sentAt < 6000; // Order expiry is 4 s
+        if (!pos.sellInFlight && !sellPending && now - lastAttempt >= 1500) { // Retry every 1.5s until filled
+          pos.sellInFlight = true;
           pos.lastCashoutAttemptMs = now;
           pos.cashoutAttempts = (pos.cashoutAttempts || 0) + 1;
           saveBotState();
@@ -878,8 +914,9 @@ function evaluateStrategy() {
             sideName: pos.targetSideName,
             sharesToSell: pos.sharesBought,
             relDelta,
-            qSurv
-          });
+            qSurv,
+            pos
+          }).finally(() => { pos.sellInFlight = false; });
         }
       }
     }
@@ -1219,6 +1256,7 @@ async function executeTrade(params) {
       dailyWs.send(JSON.stringify(tradeFrame));
     } else {
       console.error('Cannot send trade: Daily WS not open');
+      return;
     }
   }
 
@@ -1258,6 +1296,7 @@ async function executeTrade(params) {
   // Track open position for dynamic Stop-Loss
   activePositions.set(params.slug, {
     market: params.market,
+    buyRequestId: requestId,
     targetOutcome: params.targetOutcome,
     targetSideName: params.targetSideName,
     sharesBought: sharesToBuy,
@@ -1280,23 +1319,27 @@ async function executeCashOut(params) {
     // Selling on Daily.fun taker order
     const limitPriceToUse = Math.max(0.05, bestBid - 0.02); // 2-cent slippage into bid
     const limitPriceMicros = BigInt(Math.round(limitPriceToUse * 1_000_000));
-    const sharesMicros = BigInt(params.sharesToSell) * 1_000_000n;
-    const baseNotionalMicros = (sharesMicros * limitPriceMicros) / 1_000_000n;
-    const feeRateBps = params.market.feeRateBps ?? 700;
-    const feeMicros = (sharesMicros * BigInt(feeRateBps) * limitPriceMicros * (1_000_000n - limitPriceMicros)) / (10_000n * 1_000_000n * 1_000_000n);
-    const maxNotional = baseNotionalMicros + feeMicros;
-    
+    const sharesMicros = BigInt(Math.round(params.sharesToSell * 1_000_000));
+    // The site signs sells with the u64 maximum: a real value caps the proceeds and truncates the fill.
+    const maxNotional = 0xffffffffffffffffn;
+
     const sRes = await fetch(`https://daily.fun/chain-api/daily-markets/trading-session?authority=${AUTHORITY.toBase58()}`, {
-      headers: { 'Authorization': `Bearer ${PRIVY_TOKEN}`, 'Origin': CONFIG.dailyOrigin }
+      headers: { 'Authorization': `Bearer ${PRIVY_TOKEN}`, 'Origin': CONFIG.dailyOrigin },
+      signal: AbortSignal.timeout(1500)
     });
-    if (!sRes.ok) return;
+    if (!sRes.ok) {
+      console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} session HTTP ${sRes.status}`);
+      return;
+    }
     const sJson = await sRes.json();
     const freshSession = sJson.tradingSession;
-    if (!freshSession?.cashSession?.enabled) return;
+    if (!freshSession?.cashSession?.enabled) {
+      console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} cash session disabled`);
+      return;
+    }
 
     const liveVaultPda = new PublicKey(freshSession.vault);
     const liveSessionPda = new PublicKey(freshSession.session);
-    const currentNonce = BigInt(freshSession.cashSession.nextNonce);
     const marketPda = new PublicKey(params.market.marketPda);
     const salt = BigInt(Math.floor(Math.random() * 1e15));
     const expiry = Math.floor(Date.now() / 1000) + 4;
@@ -1310,7 +1353,7 @@ async function executeCashOut(params) {
       limitPriceMicros,
       maxShares: sharesMicros,
       maxNotional,
-      minFillShares: 1_000_000n,
+      minFillShares: 1n,
       salt,
       expiry
     };
@@ -1348,19 +1391,22 @@ async function executeCashOut(params) {
       }
     };
 
-    if (dailyWs && dailyWs.readyState === WebSocket.OPEN) {
-      dailyWs.send(JSON.stringify(sellFrame));
-      console.log(new Date().toISOString(), `[CASHOUT SENT] ${params.slug} sell order sent to Daily WS`);
-      logTrade({
-        event: 'stop_loss_cashout_sent',
-        slug: params.slug,
-        side: params.sideName,
-        shares: params.sharesToSell,
-        bestBid,
-        relDelta: params.relDelta,
-        qSurv: params.qSurv
-      });
+    if (!dailyWs || dailyWs.readyState !== WebSocket.OPEN) {
+      console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} Daily WS not open`);
+      return;
     }
+    params.pos.pendingSell = { requestId, sentAt: Date.now(), shares: params.sharesToSell };
+    dailyWs.send(JSON.stringify(sellFrame));
+    console.log(new Date().toISOString(), `[CASHOUT SENT] ${params.slug} sell order sent to Daily WS`);
+    logTrade({
+      event: 'stop_loss_cashout_sent',
+      slug: params.slug,
+      side: params.sideName,
+      shares: params.sharesToSell,
+      bestBid,
+      relDelta: params.relDelta,
+      qSurv: params.qSurv
+    });
   } catch (err) {
     console.error(new Date().toISOString(), '[CASHOUT ERROR]', err.message);
   }
