@@ -121,11 +121,11 @@ const CONFIG = {
   // R1: best train t-stat of a 324-point grid, chronological 60/40 split
   windowRemainingMin: 50,  // Entry window: from the round open (300 s) down to 50 s remaining
   windowRemainingMax: 300,
-  minZScore: 0.60,         // Minimum statistical conviction Z >= 0.60
+  minZScore: 0.40,         // Minimum statistical conviction Z >= 0.40
   calmVolThreshold: 4.50,  // Allow trading unless extreme volatility (> 4.5 $/sqrt(s))
   minSigmaFloor: 2.20,     // Volatility floor to prevent underestimating variance on 5m BTC
   cModel: 1.0,             // S6 forward model scaling factor
-  minEdgeMargin: 0.08,     // Edge floor: q - (ask + fee) >= 0.08
+  minEdgeMargin: 0.04,     // Edge floor: q - (ask + fee) >= 0.04
   maxEntryAsk: 0.72,       // Maximum allowed entry ask (buy underpriced contracts only)
   // Stop: best train units of a 61-point grid (train 50.6 vs 42.2 for the old 30-90 s / -5 $ rule)
   stopLossMaxQ: 0.45,          // sell when the survival probability falls to 45 %
