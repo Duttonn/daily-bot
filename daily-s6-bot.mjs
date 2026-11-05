@@ -122,7 +122,7 @@ const CONFIG = {
   windowRemainingMin: 50,  // Entry window: from the round open (300 s) down to 50 s remaining
   windowRemainingMax: 300,
   minZScore: 0.40,         // Minimum statistical conviction Z >= 0.40
-  calmVolThreshold: 4.50,  // Allow trading unless extreme volatility (> 4.5 $/sqrt(s))
+  calmVolThreshold: 12.0,  // Allow trading unless extreme volatility (>= 12 $/sqrt(s) over 10 min)
   minSigmaFloor: 2.20,     // Volatility floor to prevent underestimating variance on 5m BTC
   cModel: 1.0,             // S6 forward model scaling factor
   minEdgeMargin: 0.04,     // Edge floor: q - (ask + fee) >= 0.04
