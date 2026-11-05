@@ -66,11 +66,11 @@ if (fs.existsSync(ENV_FILE)) {
   } catch (_) {}
 }
 
-// Resolve credentials
-const rawOwner = process.env.OWNER_ADDRESS || fileEnv.OWNER_ADDRESS || authData?.owner || null;
-const rawSecret = process.env.SESSION_SECRET_KEY || fileEnv.SESSION_SECRET_KEY || authData?.secretKey || null;
-let PRIVY_TOKEN = process.env.PRIVY_TOKEN || fileEnv.PRIVY_TOKEN || authData?.privyToken || null;
-let PRIVY_REFRESH_TOKEN = process.env.PRIVY_REFRESH_TOKEN || fileEnv.PRIVY_REFRESH_TOKEN || authData?.privyRefreshToken || null;
+// Resolve credentials (auth.json priority for rotated session tokens)
+const rawOwner = authData?.owner || process.env.OWNER_ADDRESS || fileEnv.OWNER_ADDRESS || null;
+const rawSecret = authData?.secretKey || process.env.SESSION_SECRET_KEY || fileEnv.SESSION_SECRET_KEY || null;
+let PRIVY_TOKEN = authData?.privyToken || process.env.PRIVY_TOKEN || fileEnv.PRIVY_TOKEN || null;
+let PRIVY_REFRESH_TOKEN = authData?.privyRefreshToken || process.env.PRIVY_REFRESH_TOKEN || fileEnv.PRIVY_REFRESH_TOKEN || null;
 
 const isPaperMode = process.argv.includes('--paper') || process.env.PAPER_MODE === 'true';
 
