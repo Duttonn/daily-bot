@@ -118,6 +118,15 @@ PAPER_MODE=false
 
 ### Comment extraire vos clés depuis Daily.fun ?
 
+#### Prérequis Obligatoire : Activation du Cash Vault via un Premier Trade Manuel (1 $)
+Avant de pouvoir extraire les clés pour le VPS, le compte Daily.fun **doit être initialisé on-chain** :
+1. Connectez-vous sur [https://daily.fun](https://daily.fun) avec votre wallet Solana (Phantom, Solflare, etc.).
+2. Déposez vos USDC sur la plateforme.
+3. **Placez obligatoirement au moins un premier trade manuel de 1.00 $** directement sur le site :
+   - Cette action déclenche la signature d'activation du vault (`daily_cash_vault_live`) et crée la session déléguée 1-click on-chain (`trading_session_v4`).
+   - Sans ce premier trade manuel, le smart contract Solana n'a pas enregistré le vault, le compte reste bloqué pour les ordres API (`betting_blocked`), et la clé privée de session n'existe pas encore dans le stockage local.
+4. Une fois le trade de 1 $ confirmé à l'écran, vous pouvez extraire vos clés ci-dessous.
+
 #### A. Obtenir les Tokens Privy pour l'Auto-Rotation 24/7
 Le jeton de session Daily.fun (`PRIVY_TOKEN`) expire toutes les 60 minutes. Pour permettre au bot de tourner sans interruption pendant des semaines, il a impérativement besoin du `PRIVY_REFRESH_TOKEN`.
 Toutes les 20 minutes (et automatiquement en cas d'erreur `bad token`), le bot contacte l'API Privy (`https://auth.privy.io/api/v1/sessions`) pour renouveler son JWT et sauvegarde le nouveau token à chaud.
@@ -147,7 +156,27 @@ Cette clé privée de 64 octets se présente sous la forme d'un tableau JSON d'e
 ```env
 SESSION_SECRET_KEY=[145,22,89,12,4,233,18,...]
 ```
-Elle est générée lors de l'activation initiale de la session de trading sur la plateforme (trading 1-click). Si vous disposez déjà d'un fichier `auth.json`, le bot le prend en charge automatiquement en secours.
+Elle est générée lors de l'activation initiale de la session de trading sur la plateforme (trading 1-click suite à votre premier trade manuel de 1 $).
+
+**Extraction 1-clic depuis la console du navigateur :**
+1. Sur Daily.fun, ouvrez la console DevTools (`F12` ou `Cmd + Option + I`).
+2. Collez la commande suivante et appuyez sur **Entrée** :
+   ```javascript
+   const req = indexedDB.open("daily-markets-device-capabilities", 1);
+   req.onsuccess = () => {
+     const tx = req.result.transaction("taker-v4", "readonly");
+     const getReq = tx.objectStore("taker-v4").getAll();
+     getReq.onsuccess = () => {
+       const key = getReq.result[0]?.secretKey;
+       if (key) {
+         console.log("SESSION_SECRET_KEY=" + JSON.stringify(Array.from(key)));
+       } else {
+         console.error("Aucune clé trouvée. Avez-vous bien passé un premier trade de 1 $ ?");
+       }
+     };
+   };
+   ```
+3. Copiez la ligne `SESSION_SECRET_KEY=[...]` affichée dans la console et collez-la dans votre fichier `.env` sur le VPS.
 
 > **IMPORTANT - Cycle de vie et contrainte d'unicité de la session :**
 > - **Validité :** Une session déléguée est valide pour **7 jours pleins** (168 heures) sur la blockchain Solana. Le bot surveille l'expiration on-chain et recharge les tokens automatiquement.
