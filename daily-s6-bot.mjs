@@ -747,6 +747,18 @@ function handleDailyMessage(msg) {
   } else if (msg.type === 'daily_markets_trade_processed' || msg.type === 'daily_markets_trade_executed') {
     console.log(new Date().toISOString(), '[TRADE SUCCESS] Daily trade executed:', JSON.stringify(msg));
     logTrade({ event: 'trade_executed', details: msg });
+    const ex = msg.execution || msg.details?.execution;
+    if (ex?.side === 'sell' && ex?.market) {
+      for (const [slug, pos] of activePositions.entries()) {
+        const pda = pos.market?.marketPda || pos.marketPda;
+        if (pda === ex.market) {
+          console.log(new Date().toISOString(), `[CASHOUT FILLED] Closing position ${slug} after confirmed on-chain sell fill`);
+          activePositions.delete(slug);
+          saveBotState();
+          break;
+        }
+      }
+    }
     updateUsdcBalance();
   } else if (msg.type === 'authed') {
     isDailyAuthed = true;
@@ -770,8 +782,15 @@ function handleDailyMessage(msg) {
       console.log(new Date().toISOString(), `[CASH EVENT] Daily USDC balance: ${currentUsdcBalance.toFixed(2)}$ (vault: ${msg.vault || 'n/a'})`);
     }
   } else if (msg.type === 'error' || msg.type === 'daily_markets_error') {
-    console.error(new Date().toISOString(), 'DAILY ERROR MSG:', JSON.stringify(msg));
-    logTrade({ event: 'daily_error', code: msg.code, message: msg.message, details: msg });
+    const bookSnapshots = {};
+    for (const [tokenId, b] of books.entries()) {
+      bookSnapshots[tokenId] = {
+        bestBid: b.bids?.[0],
+        bestAsk: b.asks?.[0]
+      };
+    }
+    console.error(new Date().toISOString(), 'DAILY ERROR MSG:', JSON.stringify(msg), 'BOOK SNAPSHOT:', JSON.stringify(bookSnapshots));
+    logTrade({ event: 'daily_error', code: msg.code, message: msg.message, details: msg, bookSnapshot: bookSnapshots });
     if (msg.message === 'bad token') {
       authFailed = true;
       isDailyAuthed = false;
@@ -842,22 +861,26 @@ function evaluateStrategy() {
       continue;
     }
 
-    if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau && !pos.cashoutAttempted) {
+    if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau) {
       const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
       const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(remainingSeconds, 1))));
       if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0) {
-        pos.cashoutAttempted = true;
-        saveBotState();
-        console.log(new Date().toISOString(), `[STOP LOSS / CASH OUT TRIGGERED] ${slug} qSurv=${qSurv.toFixed(3)} relDelta=${relDelta.toFixed(1)}$ -> executing Cash Out`);
-        executeCashOut({
-          slug,
-          market: m,
-          outcomeIndex: pos.targetOutcome,
-          sideName: pos.targetSideName,
-          sharesToSell: pos.sharesBought,
-          relDelta,
-          qSurv
-        });
+        const lastAttempt = pos.lastCashoutAttemptMs || 0;
+        if (now - lastAttempt >= 1500) { // Retry every 1.5s until filled or tau < 10s
+          pos.lastCashoutAttemptMs = now;
+          pos.cashoutAttempts = (pos.cashoutAttempts || 0) + 1;
+          saveBotState();
+          console.log(new Date().toISOString(), `[STOP LOSS / CASH OUT TRIGGERED] ${slug} attempt #${pos.cashoutAttempts} qSurv=${qSurv.toFixed(3)} relDelta=${relDelta.toFixed(1)}$ -> executing Cash Out`);
+          executeCashOut({
+            slug,
+            market: m,
+            outcomeIndex: pos.targetOutcome,
+            sideName: pos.targetSideName,
+            sharesToSell: pos.sharesBought,
+            relDelta,
+            qSurv
+          });
+        }
       }
     }
   }
@@ -1296,21 +1319,6 @@ async function executeCashOut(params) {
     const signature = nacl.sign.detached(intentHash, SECRET_KEY);
     const signatureB64 = Buffer.from(signature).toString('base64');
 
-    const cashHash = buildCashActionHash(freshSession.cashSession, intentHash, maxNotional, expiry, currentNonce);
-    const cashSig = nacl.sign.detached(cashHash, SECRET_KEY);
-    const cashSignatureB64 = Buffer.from(cashSig).toString('base64');
-
-    const cashAuthorization = {
-      protocolVersion: 1,
-      sessionAuthority: AUTHORITY.toBase58(),
-      sessionGeneration: freshSession.cashSession.sessionGeneration.toString(),
-      deploymentDomain: freshSession.cashSession.deploymentDomain.toLowerCase(),
-      amount: maxNotional.toString(),
-      expiry: expiry,
-      nonce: currentNonce.toString(),
-      signature: cashSignatureB64
-    };
-
     const sellFrame = {
       type: 'daily_markets_trade',
       requestId,
@@ -1318,7 +1326,7 @@ async function executeCashOut(params) {
       observeProcessed: true,
       acceptQueued: true,
       routeRevision: 1,
-      cashAuthorization,
+      // cashAuthorization omitted for taker sell orders per Daily.fun protocol
       intent: {
         protocolVersion: 4,
         market: marketPda.toBase58(),
