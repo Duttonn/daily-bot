@@ -151,7 +151,7 @@ Toutes les 20 minutes (et automatiquement en cas d'erreur `bad token`), le bot c
 - Cherchez la clé `privy:refresh_token` : copiez sa valeur (`PRIVY_REFRESH_TOKEN`).
 
 #### B. Obtenir l'adresse de Wallet (`OWNER_ADDRESS`)
-C'est l'adresse publique Solana de votre wallet Phantom / Backpack / Solflare connecté à Daily.fun (ex: `DY4AhsK8KkGWaxEu4kFwgyX74xRyzJeNFEvRsiJXuXG3`), visible en cliquant sur votre profil en haut à droite.
+C'est l'adresse publique Solana de votre wallet Phantom / Backpack / Solflare connecté à Daily.fun (ex: `7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU`), visible en cliquant sur votre profil en haut à droite.
 
 #### C. Obtenir la Clé de Session (`SESSION_SECRET_KEY`)
 Daily.fun utilise un mécanisme de session authority déléguée (`trading_session_v4`) sur Solana pour signer les ordres sans ouvrir une popup de wallet à chaque trade de 5 minutes.

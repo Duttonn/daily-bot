@@ -7,7 +7,12 @@ auth.json
 # Runtime Data & Logs
 bot.log
 trades.jsonl
+bot-state.json
 *.log
+
+# Evaluation Data & Research
+data/
+*.py
 
 # Dependencies
 node_modules/
