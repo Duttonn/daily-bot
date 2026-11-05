@@ -440,6 +440,19 @@ let lastBfTickMs = 0;
 let lastDailyMsgMs = 0;
 let isDailyAuthed = false;
 const priceHistory = []; // { t, p }
+// Ticks saved by the previous run: a restart then needs no 5-min warmup and keeps the open price of the round in progress.
+// Only a recent save is used, so a long outage never shows up as a flat, falsely calm stretch.
+const HISTORY_FILE = path.join(process.cwd(), 'price-history.json');
+try {
+  const saved = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+  const lastT = saved.at(-1)?.[0] || 0;
+  if (Date.now() - lastT < 60000) {
+    for (const [t, p] of saved) if (t > Date.now() - 720000 && p > 0) priceHistory.push({ t, p });
+    console.log(new Date().toISOString(), `[HISTORY RESTORED] ${priceHistory.length} ticks, last ${((Date.now() - lastT) / 1000).toFixed(1)} s ago`);
+  } else {
+    console.log(new Date().toISOString(), `[HISTORY SKIPPED] last saved tick ${((Date.now() - lastT) / 1000).toFixed(0)} s ago, warming up`);
+  }
+} catch {}
 const markets = new Map(); // slug -> market meta
 const books = new Map(); // tokenId -> { bids, asks }
 const tradedRounds = new Set();
@@ -686,6 +699,10 @@ function initBinance() {
           let pruneIdx = 0;
           while (pruneIdx < priceHistory.length && priceHistory[pruneIdx].t < cutoff) pruneIdx++;
           if (pruneIdx > 0) priceHistory.splice(0, pruneIdx);
+          try { // atomic: a crash mid-write never leaves a truncated file
+            fs.writeFileSync(HISTORY_FILE + '.tmp', JSON.stringify(priceHistory.map((x) => [x.t, x.p])));
+            fs.renameSync(HISTORY_FILE + '.tmp', HISTORY_FILE);
+          } catch (e) { console.warn('Failed to save price history:', e.message); }
         }
       }
     } catch (e) {}

@@ -8,6 +8,7 @@ auth.json
 bot.log
 trades.jsonl
 bot-state.json
+price-history.json*
 *.log
 
 # Evaluation Data & Research

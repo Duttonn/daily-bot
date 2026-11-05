@@ -142,9 +142,10 @@ globalThis.fetch = async (url, opts) => {
 };
 `;
 
-function runScenario(botSource, scenario, ms, seedState, extraEnv = {}) {
+function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFiles = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-path-'));
   if (seedState) fs.writeFileSync(path.join(dir, 'bot-state.json'), JSON.stringify(seedState));
+  for (const [name, body] of Object.entries(seedFiles)) fs.writeFileSync(path.join(dir, name), body);
   const nm = path.join(dir, 'node_modules');
   fs.mkdirSync(path.join(nm, 'ws'), { recursive: true });
   fs.writeFileSync(path.join(nm, 'ws', 'index.js'), FAKE_WS);
@@ -164,8 +165,10 @@ function runScenario(botSource, scenario, ms, seedState, extraEnv = {}) {
       const frames = out.split('\n').filter((l) => l.startsWith('HARNESS ')).map((l) => JSON.parse(l.slice(8)));
       const statePath = path.join(dir, 'bot-state.json');
       const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null;
+      const histPath = path.join(dir, 'price-history.json');
+      const saved = fs.existsSync(histPath) ? JSON.parse(fs.readFileSync(histPath, 'utf8')) : null;
       fs.rmSync(dir, { recursive: true, force: true });
-      resolve({ frames, state, out });
+      resolve({ frames, state, out, saved });
     });
   });
 }
@@ -183,7 +186,9 @@ if (argv[0] === '--build-probe') {
 }
 
 const bot = withProbeHooks(fs.readFileSync(argv[0] || path.join(ROOT, 'daily-s6-bot.mjs'), 'utf8'));
-const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset] = await Promise.all([
+// 10 min of saved ticks ending `ageMs` ago, as a previous run would leave them
+const savedTicks = (ageMs) => { const end = Date.now() - ageMs, out = []; let p = 80000; for (let t = end - 600000; t <= end; t += 100) { p += Math.sin(t / 7000) * 0.8; out.push([t, p]); } return JSON.stringify(out); };
+const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
   runScenario(bot, 'sell_rejected', 13000),
@@ -192,6 +197,8 @@ const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset] 
   runScenario(bot, 'sell_lost', 10000),
   runScenario(bot, 'buy_silent', 21000),
   runScenario(bot, 'floor', 6000, { tradedRounds: [], activePositions: [], peakBalance: 700 }, { RESET_PEAK: '1', SIZING_FRACTION: '0.2' }),
+  runScenario(bot, 'history', 16000, null, {}, { 'price-history.json': savedTicks(2000) }),
+  runScenario(bot, 'history', 3000, null, {}, { 'price-history.json': savedTicks(120000) }),
 ]);
 
 const sells = (r) => r.frames.filter((f) => f.side === 'sell');
@@ -240,5 +247,10 @@ check('buy_silent: unconfirmed buy dropped after 15 s', buySilent.out.includes('
 check('reset: RESET_PEAK=1 drops the stored peak', reset.out.includes('[RESET_PEAK]') && reset.state?.peakBalance === 400 && !reset.out.includes('[FLOOR]'));
 check('reset: SIZING_FRACTION above 5 % is ignored with a warning', reset.out.includes('SIZING_FRACTION=0.2 ignored'));
 
+const firstHb = (r) => (r.out.split('\n').find((l) => l.includes('[HEARTBEAT]')) || '');
+check('history: a fresh save is restored and the first heartbeat has a sigma', histFresh.out.includes('[HISTORY RESTORED]') && /sigmaM=\d/.test(firstHb(histFresh)));
+check('history: the bot rewrites the file with its live ticks after the restored ones', histFresh.saved?.length > 6001 && histFresh.saved.at(-1)[0] - histFresh.saved[6000][0] > 5000);
+check('history: a save older than 60 s is skipped and the bot warms up', histStale.out.includes('[HISTORY SKIPPED]') && firstHb(histStale).includes('sigmaM=warmup'));
+check('history: without a save the bot warms up as before', firstHb(partial).includes('sigmaM=warmup'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
