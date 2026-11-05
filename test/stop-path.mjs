@@ -69,7 +69,7 @@ const book = (tokenId) => ({ type: 'updown_book', tokenId, bids: level(0.5), ask
 let sells = 0, buys = 0;
 function note(frame) {
   const i = frame.intent;
-  console.log('HARNESS ' + JSON.stringify({ t: Date.now(), side: i.side, maxShares: i.maxShares, maxNotional: i.maxNotional, minFill: i.minFillShares, hasCash: 'cashAuthorization' in frame }));
+  console.log('HARNESS ' + JSON.stringify({ t: Date.now(), side: i.side, maxShares: i.maxShares, maxNotional: i.maxNotional, minFill: i.minFillShares, limit: i.limitPriceMicros, hasCash: 'cashAuthorization' in frame }));
 }
 class WebSocket extends EventEmitter {
   static OPEN = 1;
@@ -103,9 +103,14 @@ class WebSocket extends EventEmitter {
     if (m.intent.side === 'buy') {
       buys++;
       if (scenario === 'buy_rejected') return this.reject(m);
+      if (scenario === 'buy_silent') return; // the venue never answers this buy
       return this.accept(m, m.intent.maxShares);
     }
     sells++;
+    if (scenario === 'sell_lost' && sells === 1) { // accepted, confirmation lost, the venue position list shows 0
+      this.accept(m, m.intent.maxShares, false);
+      return this.reply({ type: 'updown_update', nativePositions: [{ market: { marketPda: PDA }, outcomeIndex: m.intent.outcomeIndex, quantity: '0' }] }, 500);
+    }
     if (scenario === 'partial') return this.accept(m, sells === 1 ? 4000000 : m.intent.maxShares);
     if (scenario === 'sell_rejected' && sells === 1) return this.reject(m);
     if (scenario === 'no_processed' && sells === 1) return this.accept(m, m.intent.maxShares, false);
@@ -137,7 +142,7 @@ globalThis.fetch = async (url, opts) => {
 };
 `;
 
-function runScenario(botSource, scenario, ms, seedState) {
+function runScenario(botSource, scenario, ms, seedState, extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-path-'));
   if (seedState) fs.writeFileSync(path.join(dir, 'bot-state.json'), JSON.stringify(seedState));
   const nm = path.join(dir, 'node_modules');
@@ -148,7 +153,7 @@ function runScenario(botSource, scenario, ms, seedState) {
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
   fs.writeFileSync(path.join(dir, 'bot.mjs'), botSource);
   const env = { PATH: process.env.PATH, SCENARIO: scenario, STOP_PROBE_SHARES: '6', OWNER_ADDRESS: '11111111111111111111111111111111',
-    SESSION_SECRET_KEY: JSON.stringify(Array(64).fill(7)), PRIVY_TOKEN: 'x', PRIVY_REFRESH_TOKEN: 'x', ENV_FILE: path.join(dir, 'none'), AUTH_FILE: path.join(dir, 'none') };
+    SESSION_SECRET_KEY: JSON.stringify(Array(64).fill(7)), PRIVY_TOKEN: 'x', PRIVY_REFRESH_TOKEN: 'x', ENV_FILE: path.join(dir, 'none'), AUTH_FILE: path.join(dir, 'none'), ...extraEnv };
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['--import', path.join(dir, 'fetch-stub.mjs'), 'bot.mjs'], { cwd: dir, env });
     let out = '';
@@ -178,12 +183,15 @@ if (argv[0] === '--build-probe') {
 }
 
 const bot = withProbeHooks(fs.readFileSync(argv[0] || path.join(ROOT, 'daily-s6-bot.mjs'), 'utf8'));
-const [partial, rejected, sellRej, noProc, floored] = await Promise.all([
+const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
   runScenario(bot, 'sell_rejected', 13000),
   runScenario(bot, 'no_processed', 18000),
   runScenario(bot, 'floor', 6000, { tradedRounds: [], activePositions: [], peakBalance: 700 }), // balance 400 < 0.65 x 700
+  runScenario(bot, 'sell_lost', 10000),
+  runScenario(bot, 'buy_silent', 21000),
+  runScenario(bot, 'floor', 6000, { tradedRounds: [], activePositions: [], peakBalance: 700 }, { RESET_PEAK: '1', SIZING_FRACTION: '0.2' }),
 ]);
 
 const sells = (r) => r.frames.filter((f) => f.side === 'sell');
@@ -221,6 +229,16 @@ check('latency: the market was prewarmed before the buy', partial.out.split('\n'
 check('floor: peak restored and kept at 700', floored.out.includes('peakBalance=700$') && floored.state?.peakBalance === 700);
 check('floor: entries paused at 455', floored.out.includes('<= floor 455.00$'));
 check('floor: first balance becomes the peak, no pause', partial.state?.peakBalance === 400 && !partial.out.includes('[FLOOR]'));
+
+s = sells(sellRej);
+check('sell_rejected: the retry limit is 2 c lower', s.length === 2 && BigInt(s[0].limit) - BigInt(s[1].limit) === 20000n);
+s = sells(sellLost);
+check('sell_lost: venue position at 0 closes the position', sellLost.out.includes('[VENUE SYNC]') && openCount(sellLost) === 0);
+check('sell_lost: no second sell after the lost confirmation', s.length === 1);
+check('buy_silent: nothing sold before the buy is confirmed', sells(buySilent).length === 0);
+check('buy_silent: unconfirmed buy dropped after 15 s', buySilent.out.includes('[BUY UNCONFIRMED]') && openCount(buySilent) === 0);
+check('reset: RESET_PEAK=1 drops the stored peak', reset.out.includes('[RESET_PEAK]') && reset.state?.peakBalance === 400 && !reset.out.includes('[FLOOR]'));
+check('reset: SIZING_FRACTION above 5 % is ignored with a warning', reset.out.includes('SIZING_FRACTION=0.2 ignored'));
 
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);

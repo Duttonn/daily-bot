@@ -134,7 +134,7 @@ const CONFIG = {
   stopLossMaxTau: 200,
 
   // Capital Preservation Sizing
-  sizingFraction: parseFloat(process.env.SIZING_FRACTION || '0.05'), // 5% of vault base (Claude C5)
+  sizingFraction: Math.min(0.05, parseFloat(process.env.SIZING_FRACTION) > 0 ? parseFloat(process.env.SIZING_FRACTION) : 0.05), // 5 % of the balance, capped: a higher stake needs a code change
   maxSharesSafetyCap: 1000,    // Safety ceiling to absorb Level 1 + Level 2 liquidity depth
   trailingFloorDrawdown: 0.35, // New entries stop once the free balance is 35% below its peak (7-day p95 drawdown 24-32%)
   minBalanceFloorMinUsd: 5.0   // Absolute minimum floor to allow small wallets to trade
@@ -204,7 +204,13 @@ console.log('  Z-Score Filter: ', `Z >= ${CONFIG.minZScore}`);
 console.log('  Edge Margin:    ', `edge >= +${(CONFIG.minEdgeMargin * 100).toFixed(1)}% net`);
 console.log('  Max Entry Ask:  ', `<=${CONFIG.maxEntryAsk}$`);
 console.log('  Stop Loss Cut:  ', `q_surv <= ${(CONFIG.stopLossMaxQ * 100).toFixed(0)}% or d <= -${CONFIG.stopLossMaxAdverseUsd}$ [${CONFIG.stopLossMinTau}s-${CONFIG.stopLossMaxTau}s]`);
-console.log('  Capital Sizing: ', `${(CONFIG.sizingFraction * 100)}% base + Edge Sizing`);
+console.log('  Capital Sizing: ', `${(CONFIG.sizingFraction * 100)}% of the balance, fixed`);
+if (process.env.SIZING_FRACTION && parseFloat(process.env.SIZING_FRACTION) !== CONFIG.sizingFraction) {
+  console.warn(`[CONFIG WARNING] SIZING_FRACTION=${process.env.SIZING_FRACTION} ignored, using ${CONFIG.sizingFraction}`);
+}
+if (process.env.MIN_BALANCE_FLOOR_USD) {
+  console.warn(`[CONFIG WARNING] MIN_BALANCE_FLOOR_USD=${process.env.MIN_BALANCE_FLOOR_USD} replaces the trailing floor`);
+}
 
 // Math Helpers
 
@@ -520,7 +526,15 @@ function saveBotState() {
           cashoutAttempted: pos.cashoutAttempted,
           marketPda: pos.market?.marketPda || pos.marketPda,
           marketEndMs: pos.market?.endMs || pos.marketEndMs,
-          marketFeeRateBps: pos.market?.feeRateBps || pos.marketFeeRateBps
+          marketFeeRateBps: pos.market?.feeRateBps || pos.marketFeeRateBps,
+          // so a restart neither re-sends a sell in flight nor forgets which buy it waits for
+          buyRequestId: pos.buyRequestId,
+          buySentAt: pos.buySentAt,
+          buyAccepted: pos.buyAccepted,
+          buyProcessed: pos.buyProcessed,
+          pendingSell: pos.pendingSell,
+          lastCashoutAttemptMs: pos.lastCashoutAttemptMs,
+          cashoutAttempts: pos.cashoutAttempts
         }
       ]);
     }
@@ -560,6 +574,10 @@ function loadBotState() {
         initialDetectedBalance = data.initialDetectedBalance;
       }
       if (data.peakBalance > 0) peakBalance = data.peakBalance;
+      if (process.env.RESET_PEAK === '1') { // after a withdrawal: the next balance read becomes the new peak
+        console.warn(new Date().toISOString(), `[RESET_PEAK] peak ${peakBalance}$ discarded`);
+        peakBalance = null;
+      }
       console.log(new Date().toISOString(), `[STATE RESTORED] Loaded ${tradedRounds.size} traded rounds, ${activePositions.size} active positions, initialDetectedBalance=${initialDetectedBalance}$ peakBalance=${peakBalance}$`);
     }
   } catch (err) {
@@ -778,8 +796,10 @@ function trackOrderResult(msg) {
     const accepted = Number(msg.execution?.acceptedSize) / 1_000_000;
     if (!(accepted > 0)) return;
     if (isSell) pos.pendingSell.acceptedShares = accepted;
-    else pos.sharesBought = accepted;
-  } else if (isSell) {
+    else { pos.sharesBought = accepted; pos.buyAccepted = true; }
+  } else if (!isSell) {
+    pos.buyProcessed = true;
+  } else {
     const sold = pos.pendingSell.acceptedShares ?? pos.pendingSell.shares;
     pos.pendingSell = null;
     pos.sharesBought = Math.max(0, pos.sharesBought - sold);
@@ -791,6 +811,31 @@ function trackOrderResult(msg) {
     }
   }
   saveBotState();
+}
+
+// The venue's own position list is the truth on size. It settles a sell whose confirmation was lost, a restart
+// in the middle of a sell, and a partial fill, without trusting our bookkeeping of request results.
+function syncVenuePositions(list) {
+  let changed = false;
+  for (const [slug, pos] of activePositions.entries()) {
+    const v = list.find((x) => x.market?.marketPda === pos.market?.marketPda && x.outcomeIndex === pos.targetOutcome);
+    if (!v) continue;
+    const qty = Number(v.quantity) / 1_000_000;
+    if (!Number.isFinite(qty)) continue;
+    if (!pos.buyProcessed && !(pos.buySentAt && Date.now() - pos.buySentAt > 15000) && pos.buySentAt) continue; // buy still in flight
+    if (pos.pendingSell) {
+      if (qty >= (pos.pendingSell.qtyAtSend ?? pos.sharesBought) - 1e-6) continue; // the sell has not landed yet
+      pos.pendingSell = null; // it landed: the venue quantity below replaces our bookkeeping
+    }
+    if (qty < 1e-6) {
+      console.log(new Date().toISOString(), `[VENUE SYNC] ${slug} venue holds 0 shares, position closed`);
+      activePositions.delete(slug); changed = true;
+    } else if (Math.abs(qty - pos.sharesBought) > 1e-6) {
+      console.log(new Date().toISOString(), `[VENUE SYNC] ${slug} shares ${pos.sharesBought} -> ${qty}`);
+      pos.sharesBought = qty; changed = true;
+    }
+  }
+  if (changed) saveBotState();
 }
 
 function trackOrderError(msg) {
@@ -900,6 +945,9 @@ function handleDailyMessage(msg) {
       console.warn(new Date().toISOString(), '[SUBSCRIPTION LIMIT] Cycling Daily WS connection...');
       if (dailyWs) dailyWs.close();
     }
+  } else if (msg.type === 'updown_update') {
+    logTrade({ event: 'daily_ws_event', type: msg.type, details: msg });
+    syncVenuePositions(msg.nativePositions || []);
   } else if (msg.type && !['updown_markets', 'updown_book', 'updown_pyth', 'updown_spot', 'updown_pyth_history', 'updown_spot_history', 'updown_public_trades', 'updown_spot_snapshot', 'updown_subscribed', 'updown_book_subscribed', 'ping', 'pong'].includes(msg.type)) {
     logTrade({ event: 'daily_ws_event', type: msg.type, details: msg });
   }
@@ -961,6 +1009,17 @@ function evaluateStrategy() {
       continue;
     }
 
+    // A buy the venue never answered (no result, or an error without a requestId) leaves no shares: drop it.
+    if (pos.buySentAt && !pos.buyAccepted && !pos.buyProcessed && now - pos.buySentAt > 15000) {
+      console.warn(new Date().toISOString(), `[BUY UNCONFIRMED] ${slug} no venue result after 15 s, position dropped`);
+      activePositions.delete(slug);
+      saveBotState();
+      continue;
+    }
+    if (pos.buySentAt && !pos.buyAccepted && !pos.buyProcessed) {
+      continue; // nothing to sell before the venue confirms the buy
+    }
+
     if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau) {
       const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
       const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(remainingSeconds, 1))));
@@ -1005,7 +1064,7 @@ function evaluateStrategy() {
   const dynamicFloor = balanceFloor();
   if (currentUsdcBalance !== null && currentUsdcBalance <= dynamicFloor && now - lastFloorLog > 60000) {
     lastFloorLog = now;
-    console.warn(new Date().toISOString(), `[FLOOR] balance ${currentUsdcBalance.toFixed(2)}$ <= floor ${dynamicFloor.toFixed(2)}$ (peak ${peakBalance?.toFixed(2)}$): new entries paused`);
+    console.warn(new Date().toISOString(), `[FLOOR] balance ${currentUsdcBalance.toFixed(2)}$ <= floor ${dynamicFloor.toFixed(2)}$ (peak ${peakBalance?.toFixed(2)}$): new entries paused; after a withdrawal restart with RESET_PEAK=1`);
   }
   if (currentUsdcBalance === null || (now - lastBalanceCheck > 60000) || currentUsdcBalance <= dynamicFloor) {
     return;
@@ -1122,7 +1181,7 @@ async function executeTrade(params) {
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
   let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
 
-  // Capital Preservation Sizing: fixed 1.0x sizing (disabled 1.8x leverage per Claude C6)
+  // Fixed 1.0x sizing: no leverage on edge
   const edgeMultiplier = 1.0;
   let targetSpend = Math.min(baseTargetSpend * edgeMultiplier, maxSafeSpend);
 
@@ -1333,7 +1392,10 @@ async function executeTrade(params) {
     f0: params.f0,
     entryPrice: params.level1Ask,
     entryTau: params.tau,
-    cashoutAttempted: false
+    cashoutAttempted: false,
+    buySentAt: Date.now(),
+    buyAccepted: false,
+    buyProcessed: false
   });
   saveBotState();
 }
@@ -1347,7 +1409,8 @@ async function executeCashOut(params) {
     console.log(new Date().toISOString(), `[CASHOUT EXECUTION] Attempting cashout for ${params.slug} shares=${params.sharesToSell} bestBid=${bestBid}`);
     
     // Selling on Daily.fun taker order
-    const limitPriceToUse = Math.max(0.05, bestBid - 0.02); // 2-cent slippage into bid
+    const failedAttempts = Math.max(0, (params.pos?.cashoutAttempts || 1) - 1);
+    const limitPriceToUse = Math.max(0.05, bestBid - 0.02 - 0.02 * failedAttempts); // 2 c into the bid, 2 c more per failed attempt (a stale bid cannot block the exit)
     const limitPriceMicros = BigInt(Math.round(limitPriceToUse * 1_000_000));
     const sharesMicros = BigInt(Math.round(params.sharesToSell * 1_000_000));
     // The site signs sells with the u64 maximum: a real value caps the proceeds and truncates the fill.
@@ -1420,7 +1483,7 @@ async function executeCashOut(params) {
       console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} Daily WS not open`);
       return;
     }
-    params.pos.pendingSell = { requestId, sentAt: Date.now(), shares: params.sharesToSell };
+    params.pos.pendingSell = { requestId, sentAt: Date.now(), shares: params.sharesToSell, qtyAtSend: params.pos.sharesBought };
     dailyWs.send(JSON.stringify(sellFrame));
     console.log(new Date().toISOString(), `[CASHOUT SENT] ${params.slug} sell order sent to Daily WS`);
     logTrade({
