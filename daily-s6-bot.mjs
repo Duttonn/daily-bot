@@ -127,9 +127,11 @@ const CONFIG = {
   cModel: 1.0,             // S6 forward model scaling factor
   minEdgeMargin: 0.08,     // Edge floor: q - (ask + fee) >= 0.08
   maxEntryAsk: 0.72,       // Maximum allowed entry ask (buy underpriced contracts only)
-  stopLossMaxQ: 0.30,      // Dynamic Stop-Loss survival probability threshold (cuts if q <= 30% or d <= -5$)
-  stopLossMinTau: 30,      // Minimum remaining seconds to execute stop-loss
-  stopLossMaxTau: 90,      // Maximum remaining seconds to execute stop-loss
+  // Stop: best train units of a 61-point grid (train 50.6 vs 42.2 for the old 30-90 s / -5 $ rule)
+  stopLossMaxQ: 0.45,          // sell when the survival probability falls to 45 %
+  stopLossMaxAdverseUsd: 3.0,  // or when the price is 3 $ against us since the round open
+  stopLossMinTau: 10,          // active from 200 s down to 10 s remaining
+  stopLossMaxTau: 200,
 
   // Capital Preservation Sizing
   sizingFraction: parseFloat(process.env.SIZING_FRACTION || '0.05'), // 5% of vault base (Claude C5)
@@ -201,7 +203,7 @@ console.log('  Timing Window:  ', `[${CONFIG.windowRemainingMin}s, ${CONFIG.wind
 console.log('  Z-Score Filter: ', `Z >= ${CONFIG.minZScore}`);
 console.log('  Edge Margin:    ', `edge >= +${(CONFIG.minEdgeMargin * 100).toFixed(1)}% net`);
 console.log('  Max Entry Ask:  ', `<=${CONFIG.maxEntryAsk}$`);
-console.log('  Stop Loss Cut:  ', `q_surv <= ${(CONFIG.stopLossMaxQ * 100).toFixed(0)}% [${CONFIG.stopLossMinTau}s-${CONFIG.stopLossMaxTau}s]`);
+console.log('  Stop Loss Cut:  ', `q_surv <= ${(CONFIG.stopLossMaxQ * 100).toFixed(0)}% or d <= -${CONFIG.stopLossMaxAdverseUsd}$ [${CONFIG.stopLossMinTau}s-${CONFIG.stopLossMaxTau}s]`);
 console.log('  Capital Sizing: ', `${(CONFIG.sizingFraction * 100)}% base + Edge Sizing`);
 
 // Math Helpers
@@ -962,7 +964,7 @@ function evaluateStrategy() {
     if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau) {
       const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
       const qSurv = normalCdf(relDelta / (CONFIG.cModel * sigmaEff * Math.sqrt(Math.max(remainingSeconds, 1))));
-      if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0) {
+      if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -CONFIG.stopLossMaxAdverseUsd) {
         const lastAttempt = pos.lastCashoutAttemptMs || 0;
         const sellPending = pos.pendingSell && now - pos.pendingSell.sentAt < 6000; // Order expiry is 4 s
         if (!pos.sellInFlight && !sellPending && now - lastAttempt >= 1500) { // Retry every 1.5s until filled

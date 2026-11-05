@@ -46,7 +46,7 @@ function stopProbeTick(now, sigmaM) {
 
 function evaluateStrategy() {`,
     ],
-    ['if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0) {', 'if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -5.0 || slug === probeSlug) {'],
+    ['if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -CONFIG.stopLossMaxAdverseUsd) {', 'if (qSurv <= CONFIG.stopLossMaxQ || relDelta <= -CONFIG.stopLossMaxAdverseUsd || slug === probeSlug) {'],
     ['  // 2. GATES FOR NEW ENTRIES ONLY', '  stopProbeTick(now, sigmaM);\n  // 2. GATES FOR NEW ENTRIES ONLY'],
     ['let sharesToBuy = Math.floor(Math.min(sharesTarget, maxFillableShares));', 'let sharesToBuy = PROBE_SHARES;'],
   ];
