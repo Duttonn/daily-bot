@@ -130,8 +130,8 @@ const CONFIG = {
   // Stop: best train units of a 61-point grid (train 50.6 vs 42.2 for the old 30-90 s / -5 $ rule)
   stopLossMaxQ: 0.45,          // sell when the survival probability falls to 45 %
   stopLossMaxAdverseUsd: 3.0,  // or when the price is 3 $ against us since the round open
-  stopLossMinTau: 10,          // active from 200 s down to 10 s remaining
-  stopLossMaxTau: 200,
+  stopLossMinTau: 10,          // active from 300 s (the round open) down to 10 s remaining
+  stopLossMaxTau: 300,
 
   // Capital Preservation Sizing
   sizingFraction: Math.min(0.05, parseFloat(process.env.SIZING_FRACTION) > 0 ? parseFloat(process.env.SIZING_FRACTION) : 0.05), // 5 % of the balance, capped: a higher stake needs a code change
