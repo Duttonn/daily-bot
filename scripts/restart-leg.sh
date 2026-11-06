@@ -1,0 +1,8 @@
+#!/bin/bash
+# Swap in the leg trader files uploaded as code/*.new on the VPS and restart the trader, only when the leg holds nothing.
+# Reads back the start event (sha256 of the files now running) and the preload gap. Backups stay as code/<file>.<sha8>.
+ssh -i /Users/ndn18/Downloads/canada-key.pem -o BatchMode=yes ubuntu@15.156.83.71 'cd ~/lgbm-leg; date -u +%T; python3 -c "
+import json,sys; l=json.load(open(\"/home/ubuntu/daily-bot/lgb-state.json\")); flat=not l.get(\"pos\") and not l.get(\"orders\"); print(\"leg flat\", flat); sys.exit(0 if flat else 1)" || { echo "ABORT: the leg holds a position or an order, retry after the round"; exit 1; }; ls code/*.new >/dev/null 2>&1 || { echo "ABORT: no code/*.new to swap in"; exit 1; }; tmux kill-session -t lgbm-leg; for i in $(seq 50); do pgrep -f "^python3 code/trader.py --port 47014" >/dev/null || break; sleep 0.2; done; pgrep -af "^python3 code/trader.py --port 47014" && { echo STILL-RUNNING; exit 1; }; for f in code/*.new; do mv "$f" "${f%.new}"; done; tmux new-session -d -s lgbm-leg "cd /home/ubuntu/lgbm-leg && nice -n 10 python3 code/trader.py --port 47014 --out /home/ubuntu/lgbm-leg --orders-port 47012 --fills-port 47013 --preload /home/ubuntu/venue-rec/data/daily 2>> /home/ubuntu/lgbm-leg/trader.err"; sleep 15; date -u +%T; pgrep -af "^python3 code/trader.py" | cut -c1-120; grep -E "\"ev\":\"(start|preload)\"" paper.jsonl | tail -2 | python3 -c "
+import sys,json
+for l in sys.stdin:
+    e=json.loads(l); print(e[\"ev\"], e.get(\"wall\",\"\"), {k: v[:8] for k, v in e.get(\"sha256\",{}).items()}, \"gap_s\", e.get(\"gap_s\"), \"lines\", e.get(\"lines\"))"; tail -c 300 trader.err'

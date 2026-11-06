@@ -1,0 +1,7 @@
+#!/bin/bash
+# Swap in the bot build uploaded as daily-s6-bot.new.mjs on the VPS and restart the bot, only when the bot and the leg hold nothing.
+# Reads back: one process, the sha of the running file, the restore lines and the first heartbeat. Backup: daily-s6-bot.mjs.<commit>.
+ssh -i /Users/ndn18/Downloads/canada-key.pem -o BatchMode=yes ubuntu@15.156.83.71 'cd ~/daily-bot; date -u +%T; [ -e daily-s6-bot.new.mjs ] || { echo "ABORT: no daily-s6-bot.new.mjs"; exit 1; }; python3 -c "
+import json,sys; b=json.load(open(\"bot-state.json\")); l=json.load(open(\"lgb-state.json\"))
+flat = not b.get(\"activePositions\") and not l.get(\"pos\") and not l.get(\"orders\")
+print(\"flat\", flat, \"peak\", b.get(\"peakBalance\"), \"leg cash\", l[\"cash\"]); sys.exit(0 if flat else 1)" || { echo "ABORT: not flat, retry after the round"; exit 1; }; tmux kill-session -t daily-bot; for i in $(seq 50); do pgrep -f "^node daily-s6-bot" >/dev/null || break; sleep 0.2; done; pgrep -af "^node daily-s6-bot" && { echo STILL-RUNNING; exit 1; }; mv daily-s6-bot.new.mjs daily-s6-bot.mjs && tmux new-session -d -s daily-bot -c /home/ubuntu/daily-bot "LGB_PORT=47012 LGB_REPLY_PORT=47013 node daily-s6-bot.mjs 2>&1 | tee -a bot.log"; date -u +%T; sleep 12; pgrep -af "^node daily-s6-bot"; sha256sum daily-s6-bot.mjs | cut -c1-12; tail -40 bot.log | grep -E "HISTORY RESTORED|STATE RESTORED|\[LGB\] leg on|HEARTBEAT|FLOOR|ERROR|Error" | cut -c1-230 | tail -6'
