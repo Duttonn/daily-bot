@@ -483,6 +483,15 @@ let sessionCache = null; // { session, at, nonceSpent }
 let sessionGen = 0;      // bumped when a buy consumes the nonce; older fetches are then discarded
 function spendNonce() { sessionGen++; if (sessionCache) sessionCache.nonceSpent = true; }
 function invalidateSession() { spendNonce(); fetchSession(); }
+// The session API can still show the nonce of a buy just processed (MATCHER_CASH_SESSION_STALE "signed nonce 157, indexed next
+// nonce 158", 10 times on 2026-11-06, always one behind): for 10 s after a processed buy, a buy signs at least the nonce after it.
+const signedNonces = new Map(); // requestId -> { key, nonce } of a buy in flight
+let nonceFloor = { key: '', nonce: 0n, at: 0 };
+function noteProcessedNonce(requestId) {
+  const sn = signedNonces.get(requestId);
+  signedNonces.delete(requestId);
+  if (sn && (sn.key !== nonceFloor.key || sn.nonce + 1n > nonceFloor.nonce)) nonceFloor = { key: sn.key, nonce: sn.nonce + 1n, at: Date.now() };
+}
 function fetchSession() {
   const gen = sessionGen;
   return fetch(`https://daily.fun/chain-api/daily-markets/trading-session?authority=${AUTHORITY.toBase58()}`, {
@@ -964,7 +973,7 @@ function findPositionByRequest(requestId) {
 
 // 'executed' means accepted (state prepared, filledSize 0); only 'processed' confirms on-chain.
 function trackOrderResult(msg) {
-  if (msg.type === 'daily_markets_trade_processed') invalidateSession(); // a processed buy has consumed the cash nonce
+  if (msg.type === 'daily_markets_trade_processed') { noteProcessedNonce(msg.requestId); invalidateSession(); } // a processed buy has consumed the cash nonce
   if (lgb?.orders[msg.requestId]) return lgbResult(msg);
   const [slug, pos] = findPositionByRequest(msg.requestId);
   if (!pos) return;
@@ -1035,6 +1044,7 @@ function syncVenuePositions(list) {
 }
 
 function trackOrderError(msg) {
+  signedNonces.delete(msg.requestId);
   invalidateSession();
   if (lgb?.orders[msg.requestId]) return lgbError(msg);
   const [slug, pos] = findPositionByRequest(msg.requestId);
@@ -1548,7 +1558,10 @@ function buildOrderFrame(session, { marketPda, side, outcomeIndex, limitPriceMic
   const intentHash = buildIntentHash(intent, CONFIG.programId, market, CONFIG.usdcMint, OWNER, vault, tradingSession);
   const frame = { type: 'daily_markets_trade', requestId, clientOrderId, observeProcessed: true, acceptQueued: true, routeRevision: 1 };
   if (side === 'buy') {
-    const nonce = BigInt(session.cashSession.nextNonce);
+    const key = `${session.session}:${session.cashSession.sessionGeneration}`;
+    let nonce = BigInt(session.cashSession.nextNonce);
+    if (nonceFloor.key === key && Date.now() - nonceFloor.at < 10000 && nonce < nonceFloor.nonce) nonce = nonceFloor.nonce;
+    signedNonces.set(requestId, { key, nonce }); // ponytail: a buy never answered stays here, a few bytes a day
     const cashSig = nacl.sign.detached(buildCashActionHash(session.cashSession, intentHash, maxNotional, expiry, nonce), SECRET_KEY);
     frame.cashAuthorization = {
       protocolVersion: 1,

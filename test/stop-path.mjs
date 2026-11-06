@@ -71,7 +71,7 @@ const book = (tokenId) => ({ type: 'updown_book', tokenId, bids: level(0.5), ask
 let sells = 0, buys = 0;
 function note(frame) {
   const i = frame.intent;
-  console.log('HARNESS ' + JSON.stringify({ t: Date.now(), side: i.side, maxShares: i.maxShares, maxNotional: i.maxNotional, minFill: i.minFillShares, limit: i.limitPriceMicros, hasCash: 'cashAuthorization' in frame }));
+  console.log('HARNESS ' + JSON.stringify({ t: Date.now(), side: i.side, maxShares: i.maxShares, maxNotional: i.maxNotional, minFill: i.minFillShares, limit: i.limitPriceMicros, hasCash: 'cashAuthorization' in frame, nonce: frame.cashAuthorization?.nonce }));
 }
 class WebSocket extends EventEmitter {
   static OPEN = 1;
@@ -252,6 +252,9 @@ const [legBuy, legSettle, legShared, legHalt, legReject, legCollide, legOrphan, 
 ]);
 // one pool: the wallet (400) at or under the floor (0.65 x 700 = 455) blocks the leg's buys as well as the bot's
 const legFloor = await runScenario(rawBot, 'lgb_floor', 5000, { tradedRounds: [], activePositions: [], peakBalance: 700 }, {}, {}, { port: 47317, replyPort: 47318, intents: [legOrders[0]] });
+// the session stub always shows nextNonce 5, as the real API did right after a processed buy: the add must sign 6, not 5 again
+const legNonce = await runScenario(rawBot, 'lgb_nonce', 6000, peak400, {}, {}, { port: 47319, replyPort: 47320, intents: [
+  { at: 800, o: { k: 'k1', act: 'entry', side: 'up', limit: 0.53, target: 10, p: 0.7 } }, { at: 2500, o: { k: 'k2', act: 'add', side: 'up', limit: 0.53, target: 10 } }] });
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
@@ -347,5 +350,8 @@ check('leg stale list: a venue list older than the bot\'s last fill does not clo
 check(`leg collide: the bot's stop sells its own ${Number(s[0]?.maxShares) / 1e6} shares and the leg keeps its 8`, s[0]?.maxShares === '6000000' && legCollide.out.includes('[CASHOUT FILLED]')
   && legCollide.lgbState?.pos?.[FAKE_PDA + ':0']?.shares === 8 && !legCollide.out.includes('[LGB SYNC]'));
 check('leg orphan: venue shares beyond the leg\'s own fills are not booked to the leg (5 stays 5, the venue shows 11)', legOrphan.lgbState?.pos?.[FAKE_PDA + ':1']?.shares === 5 && !legOrphan.out.includes('[LGB SYNC]'));
+check(`leg nonce: after a processed buy the next buy signs the next nonce (${legNonce.frames.map((x) => x.nonce)}) though the session still shows 5`,
+  legNonce.frames.length === 2 && legNonce.frames[0].nonce === '5' && legNonce.frames[1].nonce === '6' && rep(legNonce, 'k2').st === 'filled');
+check('nonce: the bot\'s own first buy signs the session\'s nonce, 5', partial.frames[0]?.nonce === '5');
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
