@@ -105,6 +105,7 @@ class Trader:
         self.rounds = {}; self.pool = self.pol["pool0"]; self.cnt = collections.Counter(); self.late = 0; self.last_hb = time.time()
         self.n_settled = 0; self.last_trim = 0.0; self.ntot = 0; self.by_start = {}; self.preloading = False; self.pre_until = 0
         self.leg = bool(a.orders_port); self.fills, self.sent, self.pending = {}, set(), {}
+        self.wallet = None   # leg mode: the whole wallet, sent by the bot every 10 s; one pool, so the 5 % cap is on it
         if self.leg:
             self.osk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.fsk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.fsk.bind(("127.0.0.1", a.fills_port)); self.fsk.setblocking(False)
@@ -328,7 +329,8 @@ class Trader:
         n = len(R.c["t"])
         Rd = {"rs": R.rs, "rows": list(range(n)), "t": R.c["t"], "p": R.c["bf"], "sig": R.sig, "f0": R.f0, "up": up}
         log = []
-        cap = R.cap if R.cap is not None else self.pol["cap_frac"] * max(self.pool, 0.0)
+        base = self.wallet if self.wallet is not None else self.pool
+        cap = R.cap if R.cap is not None else self.pol["cap_frac"] * max(base, 0.0)
         res = v3b_sim.sim_round(RoundP(R.c, Rd), R.rs, self.prm, self.var, model_dec=(R.dec_t[:n_proc], R.dec_k[:n_proc], R.dec_p[:n_proc]),
                                 cfg=self.cfg, liq=True, log=log, stress=self.stress, round_cap=cap,
                                 on_send=(lambda o: self.order(R, o)) if self.leg else None, fills=self.fills if self.leg else None)
@@ -359,6 +361,8 @@ class Trader:
             except (BlockingIOError, InterruptedError): return
             try: f = json.loads(data)
             except ValueError: continue
+            if isinstance(f, dict) and "k" not in f and isinstance(f.get("wallet"), (int, float)):
+                self.wallet = float(f["wallet"]); continue
             if not isinstance(f, dict) or "k" not in f: continue
             self.fills[f["k"]] = (float(f.get("sh", 0)), float(f.get("cost", 0)), float(f.get("fe", 0))); self.pending.pop(f["k"], None)
             self.emit(dict(ev="venue", **f))
@@ -367,11 +371,11 @@ class Trader:
         res, log, cap = self.sim(R, n_proc)
         old = R.log
         if self.leg:   # a venue answer rewrites the simulated fill it replaces: the log is final only at settlement
-            if log and R.cap is None: R.cap = cap; self.emit(dict(ev="round", rs=R.rs, slug=R.slug, cap=cap, pool=self.pool))
+            if log and R.cap is None: R.cap = cap; self.emit(dict(ev="round", rs=R.rs, slug=R.slug, cap=cap, pool=self.pool, wallet=self.wallet))
             R.log = log; return
         if log[:len(old)] != old: self.emit(dict(ev="error", rs=R.rs, msg="simulator prefix changed", n_old=len(old), n_new=len(log)))
         if log and R.cap is None:
-            R.cap = cap; self.emit(dict(ev="round", rs=R.rs, slug=R.slug, cap=cap, pool=self.pool))
+            R.cap = cap; self.emit(dict(ev="round", rs=R.rs, slug=R.slug, cap=cap, pool=self.pool, wallet=self.wallet))
         R.log = log
         for e in log[len(old):]:
             d = dict(ev="fill" if e["sh"] else "miss", rs=R.rs, t=e["t"], tau=e["tau"], act=e["act"], side=e["side"], p=e["p"], sh=e["sh"], px=e["px"])

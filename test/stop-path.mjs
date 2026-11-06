@@ -228,7 +228,7 @@ const legOrders = [
   { at: 800, o: { k: 'k1', act: 'entry', side: 'up', limit: 0.53, target: 200, p: 0.7 } },
   { at: 900, o: { k: 'k2', act: 'entry', side: 'up', limit: 0.53, target: 200 } },
   { at: 2500, o: { k: 'k3', act: 'add', side: 'up', limit: 0.53, target: 200 } },
-  { at: 4000, o: { k: 'k4', act: 'sell', side: 'up', limit: 0.48, shares: 9 } },
+  { at: 4000, o: { k: 'k4', act: 'sell', side: 'up', limit: 0.48, shares: 36 } },
   { at: 5500, o: { k: 'k5', act: 'sell', side: 'up', limit: 0.48, shares: 9 } },
 ];
 const seedLeg = (cash, pos = {}) => JSON.stringify({ cash, halted: false, pos, spent: {}, cap: {}, orders: {}, touched: {}, changedAt: 0 });
@@ -244,12 +244,14 @@ const [legBuy, legSettle, legShared, legHalt, legReject, legCollide, legOrphan, 
   runScenario(rawBot, 'lgb_buy', 12500, peak400, {}, {}, { port: 47301, replyPort: 47302, intents: legOrders }),
   runScenario(rawBot, 'lgb_settle', 24000, peak400, {}, {}, { port: 47303, replyPort: 47304, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_shared', 6000, sharedBot, {}, { 'lgb-state.json': sharedLeg }, { port: 47305, replyPort: 47306, intents: [] }),
-  runScenario(rawBot, 'lgb_halt', 5000, peak400, {}, { 'lgb-state.json': seedLeg(49) }, { port: 47307, replyPort: 47308, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_low_cash', 5000, peak400, {}, { 'lgb-state.json': seedLeg(49) }, { port: 47307, replyPort: 47308, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_reject', 6000, peak400, {}, {}, { port: 47309, replyPort: 47310, intents: [legOrders[0]] }),
   runScenario(bot, 'lgb_collide', 13000, peak400, {}, { 'lgb-state.json': collideLeg }, { port: 47311, replyPort: 47312, intents: [] }),
   runScenario(rawBot, 'lgb_shared', 6000, peak400, {}, { 'lgb-state.json': sharedLeg }, { port: 47313, replyPort: 47314, intents: [] }),
   runScenario(rawBot, 'lgb_stale', 6000, staleBot, {}, { 'lgb-state.json': collideLeg }, { port: 47315, replyPort: 47316, intents: [] }),
 ]);
+// one pool: the wallet (400) at or under the floor (0.65 x 700 = 455) blocks the leg's buys as well as the bot's
+const legFloor = await runScenario(rawBot, 'lgb_floor', 5000, { tradedRounds: [], activePositions: [], peakBalance: 700 }, {}, {}, { port: 47317, replyPort: 47318, intents: [legOrders[0]] });
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
@@ -320,23 +322,24 @@ const rep = (r, k) => r.replies.find((x) => x.k === k) || {};
 const near = (a, b) => Math.abs(a - b) < 1e-6;
 const legPos = (r) => Object.keys(r.lgbState?.pos || {}).length;
 check('leg off without LGB_PORT: no leg file, no leg line', partial.lgbState === null && !partial.out.includes('[LGB'));
-check('leg: a new leg takes its 100 USD off the bot peak, 400 -> 300', legBuy.out.includes('bot peak 400 -> 300 USD'));
+check('leg: a new leg ledger leaves the peak on the wallet, 400', legBuy.out.includes('new leg ledger, PnL counted from 100 USD') && legBuy.state?.peakBalance === 400);
 let f = legBuy.frames;
-check(`leg: entry sized to 5 % of the leg cash, ${Number(f[0]?.maxShares) / 1e6} shares at 0.53 with the cash authorization`, f[0]?.side === 'buy' && f[0].maxShares === '9000000' && f[0].limit === '530000' && f[0].hasCash);
-check(`leg: fill answered with the venue cost ${rep(legBuy, 'k1').cost} USD (9 x 0.53 + fee)`, rep(legBuy, 'k1').st === 'filled' && rep(legBuy, 'k1').sh === 9 && near(rep(legBuy, 'k1').cost, 4.926933));
+check(`leg: entry sized to 5 % of the wallet, ${Number(f[0]?.maxShares) / 1e6} shares at 0.53 with the cash authorization`, f[0]?.side === 'buy' && f[0].maxShares === '36000000' && f[0].limit === '530000' && f[0].hasCash);
+check(`leg: fill answered with the venue cost ${rep(legBuy, 'k1').cost} USD (36 x 0.53 + fee)`, rep(legBuy, 'k1').st === 'filled' && rep(legBuy, 'k1').sh === 36 && near(rep(legBuy, 'k1').cost, 19.707732));
+check('leg: the trader is told the wallet, 400 USD, for its own 5 % cap', legBuy.replies.some((x) => x.wallet === 400));
 check(`leg: an order while the previous one is in flight is dropped (${rep(legBuy, 'k2').why})`, rep(legBuy, 'k2').st === 'dropped' && /pending/.test(rep(legBuy, 'k2').why));
 check(`leg: an add beyond the round cap is dropped (${rep(legBuy, 'k3').why})`, rep(legBuy, 'k3').st === 'dropped' && /room/.test(rep(legBuy, 'k3').why));
-check('leg: the sale asks for the leg\'s 9 shares, no cash authorization, u64 maxNotional', f[1]?.side === 'sell' && f[1].maxShares === '9000000' && !f[1].hasCash && f[1].maxNotional === MAX_U64);
-check(`leg: sale answered with proceeds net of fee ${rep(legBuy, 'k4').cost} USD`, rep(legBuy, 'k4').st === 'filled' && near(rep(legBuy, 'k4').cost, 4.162752));
+check('leg: the sale asks for the leg\'s 36 shares, no cash authorization, u64 maxNotional', f[1]?.side === 'sell' && f[1].maxShares === '36000000' && !f[1].hasCash && f[1].maxNotional === MAX_U64);
+check(`leg: sale answered with proceeds net of fee ${rep(legBuy, 'k4').cost} USD`, rep(legBuy, 'k4').st === 'filled' && near(rep(legBuy, 'k4').cost, 16.651008));
 check('leg: a sale without leg shares is dropped', rep(legBuy, 'k5').st === 'dropped' && f.length === 2);
-check(`leg: ledger cash ${legBuy.lgbState?.cash} USD = 100 - 4.926933 + 4.162752, no position`, near(legBuy.lgbState?.cash, 99.235819) && legPos(legBuy) === 0);
-check('leg: the heartbeat shows the bot balance as the wallet minus the leg cash', legBuy.out.includes('usdc=400.00$ floor=195.00$ bot=300.76$ lgb=99.24$/0pos'));
-check(`leg: the bot peak stays ${legBuy.state?.peakBalance} while the wallet has not shown the leg's trades`, legBuy.state?.peakBalance === 300);
-check(`leg settle: the venue verdict pays the 9 up shares, cash ${legSettle.lgbState?.cash} USD`, legSettle.out.includes('[LGB SETTLED]') && near(legSettle.lgbState?.cash, 104.073067) && legPos(legSettle) === 0);
+check(`leg: ledger cash ${legBuy.lgbState?.cash} USD = 100 - 19.707732 + 16.651008, no position`, near(legBuy.lgbState?.cash, 96.943276) && legPos(legBuy) === 0);
+check('leg: the heartbeat shows the wallet floor and the two shares, bot = wallet minus the leg ledger', legBuy.out.includes('usdc=400.00$ floor=260.00$ bot=303.06$ lgb=96.94$/0pos'));
+check(`leg settle: the venue verdict pays the 36 up shares, cash ${legSettle.lgbState?.cash} USD`, legSettle.out.includes('[LGB SETTLED]') && near(legSettle.lgbState?.cash, 116.292268) && legPos(legSettle) === 0);
 s = sells(legShared);
 check(`leg shared side: the venue shows 11, the bot's stop sells its own ${Number(s[0]?.maxShares) / 1e6} shares`, s.length >= 1 && s[0].maxShares === '6000000' && !legShared.out.includes('-> 11'));
 check('leg shared side: the leg keeps its 5 shares', legShared.lgbState?.pos?.[FAKE_PDA + ':1']?.shares === 5 && legShared.out.includes('[CASHOUT FILLED]'));
-check('leg halt: below 50 USD the leg buys nothing and stays halted', rep(legHalt, 'k1').why === 'halted' && legHalt.lgbState?.halted === true && legHalt.frames.length === 0);
+check('leg low cash: no 50 USD halt, a leg ledger at 49 USD still buys on the wallet', rep(legHalt, 'k1').st === 'filled' && legHalt.lgbState?.halted === false && legHalt.frames.length === 1);
+check(`leg floor: wallet 400 under the floor 455, the leg buy is dropped (${rep(legFloor, 'k1').why}) and nothing is sent`, rep(legFloor, 'k1').why === 'floor' && legFloor.frames.length === 0);
 check('leg reject: a venue rejection is answered and books nothing', rep(legReject, 'k1').st === 'rejected' && near(legReject.lgbState?.cash, 100) && legPos(legReject) === 0);
 s = sells(legCollide);
 check('leg stale list: a venue list older than the bot\'s last fill does not close its 6 shares', !legStale.out.includes('venue holds 0 shares')

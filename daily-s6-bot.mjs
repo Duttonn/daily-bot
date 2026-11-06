@@ -470,8 +470,7 @@ let lastFloorLog = 0;
 let lastBalanceCheck = 0;
 
 function notePeak() {
-  if (!lgbQuiet()) return; // a leg fill or payout can reach the wallet before the leg's ledger, or the reverse
-  const bal = botBalance();
+  const bal = currentUsdcBalance; // one pool: the peak is the wallet's
   if (bal > (peakBalance || 0)) {
     peakBalance = bal;
     saveBotState();
@@ -607,14 +606,15 @@ loadBotState();
 
 // ---- LightGBM leg (on with LGB_PORT, off otherwise) ----
 // A second strategy in the same wallet. lgbm/trader.py decides and sends its orders here over UDP on 127.0.0.1; this file sizes
-// them against the leg's own ledger (lgb-state.json: cash, shares per market side, spend per round), sends them, answers with the
-// venue's fill and settles the leg's shares from the venue's verdict. The bot sizes, peaks and floors on the wallet minus the leg's
-// cash, so neither strategy spends the other's money. Deleting lgb-state.json starts a new leg and takes LGB_POOL0 off the peak again.
+// them, sends them, answers with the venue's fill and settles the leg's shares from the venue's verdict. One pool: both strategies
+// size on the whole wallet (5 % each), and one trailing floor on the wallet blocks new buys of both. The leg's ledger
+// (lgb-state.json: cash, shares per market side, spend per round) only keeps which shares are the leg's and the leg's PnL.
 const LGB_PORT = +process.env.LGB_PORT || 0;
-const LGB = { replyPort: +process.env.LGB_REPLY_PORT || 0, pool0: +process.env.LGB_POOL0 || 100, capFrac: 0.05, haltBelow: 50, quietMs: 15000, orderTimeoutMs: 15000 };
+const LGB = { replyPort: +process.env.LGB_REPLY_PORT || 0, pool0: +process.env.LGB_POOL0 || 100, capFrac: 0.05, quietMs: 15000, orderTimeoutMs: 15000, walletEveryMs: 10000 };
 const LGB_FILE = path.join(process.cwd(), 'lgb-state.json');
 let lgb = null; // { cash, halted, pos: { tokenId: { slug, marketId, marketPda, outcome, endMs, shares } }, spent, cap: { slug: usd }, orders: { requestId: order }, touched: { tokenId: ms }, changedAt }
 let lgbSending = false;
+let lgbWalletAt = 0;
 const lgbFetching = new Set();
 const lgbSock = LGB_PORT ? dgram.createSocket('udp4') : null;
 
@@ -622,10 +622,6 @@ function botBalance() { return currentUsdcBalance === null ? null : currentUsdcB
 function saveLgb() { try { fs.writeFileSync(LGB_FILE, JSON.stringify(lgb, null, 1)); } catch (e) { console.error(new Date().toISOString(), '[LGB] save failed', e.message); } }
 function lgbTouch(tokenId) { lgb.touched[tokenId] = lgb.changedAt = Date.now(); }
 function lgbReply(o) { if (lgbSock && LGB.replyPort) lgbSock.send(JSON.stringify(o), LGB.replyPort, '127.0.0.1'); }
-// The wallet holds what the two ledgers say: no leg order in flight, no leg ledger change for 15 s, no leg position past its round's end.
-function lgbQuiet(now = Date.now()) {
-  return !lgb || (!Object.keys(lgb.orders).length && now - (lgb.changedAt || 0) > LGB.quietMs && !Object.values(lgb.pos).some((p) => p.endMs <= now));
-}
 // A leg order on this market side is in flight or just landed: the venue's quantity may not show it yet.
 function lgbBusy(tokenId, now = Date.now()) {
   return !!lgb && (Object.values(lgb.orders).some((o) => o.tokenId === tokenId) || now - (lgb.touched[tokenId] || 0) < LGB.quietMs);
@@ -644,9 +640,7 @@ if (LGB_PORT) {
   try { lgb = JSON.parse(fs.readFileSync(LGB_FILE, 'utf8')); } catch {}
   if (!lgb) {
     lgb = { cash: LGB.pool0, halted: false, pos: {}, spent: {}, cap: {}, orders: {}, touched: {}, changedAt: 0, createdAt: new Date().toISOString() };
-    const old = peakBalance;
-    if (peakBalance) { peakBalance -= LGB.pool0; saveBotState(); }
-    console.log(new Date().toISOString(), `[LGB] new leg with ${LGB.pool0} USD of the wallet: bot peak ${old} -> ${peakBalance} USD`);
+    console.log(new Date().toISOString(), `[LGB] new leg ledger, PnL counted from ${LGB.pool0} USD`);
     saveLgb();
   }
   lgbSock.on('message', (buf) => { let o; try { o = JSON.parse(buf); } catch { return; } lgbOrder(o); });
@@ -669,13 +663,10 @@ async function lgbOrder(o) {
   const outcome = o.side === 'up' ? 0 : 1, tokenId = `${m.marketPda}:${outcome}`, buy = o.act !== 'sell', feeBps = m.feeRateBps ?? 700;
   let shares;
   if (buy) {
-    if (!lgb.halted && lgb.cash < LGB.haltBelow) {
-      lgb.halted = true; saveLgb();
-      console.warn(new Date().toISOString(), `[LGB HALT] cash ${lgb.cash.toFixed(2)} USD below ${LGB.haltBelow} USD: no more leg buys`);
-    }
-    if (lgb.halted) return drop('halted');
-    const cap = (lgb.cap[o.slug] ??= LGB.capFrac * lgb.cash); // fixed at the round's first leg buy, as the backtest's 5 % cap
-    const room = Math.min(cap - (lgb.spent[o.slug] || 0), lgb.cash - 0.5);
+    const wallet = currentUsdcBalance;
+    if (!(wallet > balanceFloor())) return drop('floor');
+    const cap = (lgb.cap[o.slug] ??= LGB.capFrac * wallet); // fixed at the round's first leg buy, as the backtest's 5 % cap
+    const room = Math.min(cap - (lgb.spent[o.slug] || 0), wallet - balanceFloor() - 0.5);
     shares = Math.min(Math.floor(Number(o.target) || 0), Math.floor(room / (o.limit + fee(o.limit, feeBps))));
     if (!(shares >= 1) || shares * o.limit < 1) return drop(`room ${room.toFixed(2)} USD`); // the venue's 1 USD minimum
   } else {
@@ -732,6 +723,8 @@ function lgbError(msg) {
 // Order timeouts, settlement from the venue's verdict, pruning (every second)
 function lgbTick() {
   const now = Date.now();
+  // the trader sizes its orders on the whole wallet too (5 % cap per round)
+  if (currentUsdcBalance > 0 && now - lgbWalletAt >= LGB.walletEveryMs) { lgbWalletAt = now; lgbReply({ wallet: currentUsdcBalance }); }
   for (const [rid, o] of Object.entries(lgb.orders)) {
     const empty = o.processed && !o.filled && now - o.processedAt > 1000;
     if (!empty && now - o.sentAt < LGB.orderTimeoutMs) continue;
@@ -1265,14 +1258,15 @@ function evaluateStrategy() {
 
   updateUsdcBalance();
 
-  // Trailing floor (blocks NEW entries only), on the bot's own balance: the wallet minus the LightGBM leg's cash
+  // Trailing floor (blocks NEW entries only), on the whole wallet: one pool for the bot and the LightGBM leg
   const dynamicFloor = balanceFloor();
-  const botBal = botBalance();
-  if (botBal !== null && botBal <= dynamicFloor && now - lastFloorLog > 60000) {
+  const botBal = botBalance(); // the bot's share, for the heartbeat only
+  const wallet = currentUsdcBalance;
+  if (wallet !== null && wallet <= dynamicFloor && now - lastFloorLog > 60000) {
     lastFloorLog = now;
-    console.warn(new Date().toISOString(), `[FLOOR] balance ${botBal.toFixed(2)}$ <= floor ${dynamicFloor.toFixed(2)}$ (peak ${peakBalance?.toFixed(2)}$): new entries paused; after a withdrawal restart with RESET_PEAK=1`);
+    console.warn(new Date().toISOString(), `[FLOOR] wallet ${wallet.toFixed(2)}$ <= floor ${dynamicFloor.toFixed(2)}$ (peak ${peakBalance?.toFixed(2)}$): new entries paused; after a withdrawal restart with RESET_PEAK=1`);
   }
-  if (botBal === null || (now - lastBalanceCheck > 60000) || botBal <= dynamicFloor) {
+  if (wallet === null || (now - lastBalanceCheck > 60000) || wallet <= dynamicFloor) {
     return;
   }
 
@@ -1384,7 +1378,7 @@ async function executeTrade(params) {
     console.warn(new Date().toISOString(), 'SKIPPING TRADE: USDC balance not yet verified');
     return;
   }
-  const balance = botBalance(); // the wallet minus the LightGBM leg's cash
+  const balance = currentUsdcBalance; // one pool: the whole wallet
   const dynamicFloor = balanceFloor();
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
   let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
