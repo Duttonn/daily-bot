@@ -11,6 +11,7 @@
 
 import WebSocket from 'ws';
 import crypto from 'node:crypto';
+import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -469,8 +470,10 @@ let lastFloorLog = 0;
 let lastBalanceCheck = 0;
 
 function notePeak() {
-  if (currentUsdcBalance > (peakBalance || 0)) {
-    peakBalance = currentUsdcBalance;
+  if (!lgbQuiet()) return; // a leg fill or payout can reach the wallet before the leg's ledger, or the reverse
+  const bal = botBalance();
+  if (bal > (peakBalance || 0)) {
+    peakBalance = bal;
     saveBotState();
   }
 }
@@ -601,6 +604,166 @@ function loadBotState() {
   }
 }
 loadBotState();
+
+// ---- LightGBM leg (on with LGB_PORT, off otherwise) ----
+// A second strategy in the same wallet. lgbm/trader.py decides and sends its orders here over UDP on 127.0.0.1; this file sizes
+// them against the leg's own ledger (lgb-state.json: cash, shares per market side, spend per round), sends them, answers with the
+// venue's fill and settles the leg's shares from the venue's verdict. The bot sizes, peaks and floors on the wallet minus the leg's
+// cash, so neither strategy spends the other's money. Deleting lgb-state.json starts a new leg and takes LGB_POOL0 off the peak again.
+const LGB_PORT = +process.env.LGB_PORT || 0;
+const LGB = { replyPort: +process.env.LGB_REPLY_PORT || 0, pool0: +process.env.LGB_POOL0 || 100, capFrac: 0.05, haltBelow: 50, quietMs: 15000, orderTimeoutMs: 15000 };
+const LGB_FILE = path.join(process.cwd(), 'lgb-state.json');
+let lgb = null; // { cash, halted, pos: { tokenId: { slug, marketId, marketPda, outcome, endMs, shares } }, spent, cap: { slug: usd }, orders: { requestId: order }, touched: { tokenId: ms }, changedAt }
+let lgbSending = false;
+const lgbFetching = new Set();
+const lgbSock = LGB_PORT ? dgram.createSocket('udp4') : null;
+
+function botBalance() { return currentUsdcBalance === null ? null : currentUsdcBalance - (lgb ? lgb.cash : 0); }
+function saveLgb() { try { fs.writeFileSync(LGB_FILE, JSON.stringify(lgb, null, 1)); } catch (e) { console.error(new Date().toISOString(), '[LGB] save failed', e.message); } }
+function lgbTouch(tokenId) { lgb.touched[tokenId] = lgb.changedAt = Date.now(); }
+function lgbReply(o) { if (lgbSock && LGB.replyPort) lgbSock.send(JSON.stringify(o), LGB.replyPort, '127.0.0.1'); }
+// The wallet holds what the two ledgers say: no leg order in flight, no leg ledger change for 15 s, no leg position past its round's end.
+function lgbQuiet(now = Date.now()) {
+  return !lgb || (!Object.keys(lgb.orders).length && now - (lgb.changedAt || 0) > LGB.quietMs && !Object.values(lgb.pos).some((p) => p.endMs <= now));
+}
+// A leg order on this market side is in flight or just landed: the venue's quantity may not show it yet.
+function lgbBusy(tokenId, now = Date.now()) {
+  return !!lgb && (Object.values(lgb.orders).some((o) => o.tokenId === tokenId) || now - (lgb.touched[tokenId] || 0) < LGB.quietMs);
+}
+// sign +1 books a venue fill in the leg's ledger, -1 takes it back (an error after the acceptance)
+function lgbBook(o, f, sign) {
+  const p = (lgb.pos[o.tokenId] ??= { slug: o.slug, marketId: o.marketId, marketPda: o.marketPda, outcome: o.outcome, endMs: o.endMs, shares: 0 });
+  const dir = o.buy ? sign : -sign;
+  p.shares = Math.max(0, p.shares + dir * f.sh); lgb.cash -= dir * f.usd;
+  if (o.buy) lgb.spent[o.slug] = (lgb.spent[o.slug] || 0) + sign * f.usd;
+  if (p.shares < 1e-6) delete lgb.pos[o.tokenId];
+  lgbTouch(o.tokenId);
+}
+
+if (LGB_PORT) {
+  try { lgb = JSON.parse(fs.readFileSync(LGB_FILE, 'utf8')); } catch {}
+  if (!lgb) {
+    lgb = { cash: LGB.pool0, halted: false, pos: {}, spent: {}, cap: {}, orders: {}, touched: {}, changedAt: 0, createdAt: new Date().toISOString() };
+    const old = peakBalance;
+    if (peakBalance) { peakBalance -= LGB.pool0; saveBotState(); }
+    console.log(new Date().toISOString(), `[LGB] new leg with ${LGB.pool0} USD of the wallet: bot peak ${old} -> ${peakBalance} USD`);
+    saveLgb();
+  }
+  lgbSock.on('message', (buf) => { let o; try { o = JSON.parse(buf); } catch { return; } lgbOrder(o); });
+  lgbSock.on('error', (e) => console.error(new Date().toISOString(), '[LGB] socket', e.message));
+  lgbSock.bind(LGB_PORT, '127.0.0.1');
+  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of its cash per round, buys stop below ${LGB.haltBelow} USD${lgb.halted ? ' (HALTED)' : ''}`);
+}
+
+async function lgbOrder(o) {
+  const t0 = Date.now();
+  const drop = (why) => {
+    console.log(new Date().toISOString(), `[LGB DROP] ${o?.slug} ${o?.act} ${o?.side} ${why}`);
+    if (typeof o?.k === 'string') lgbReply({ k: o.k, sh: 0, cost: 0, fe: 0, st: 'dropped', why });
+  };
+  if (!o || typeof o.k !== 'string' || !['entry', 'add', 'sell'].includes(o.act) || !['up', 'down'].includes(o.side) || !(o.limit > 0.01 && o.limit < 0.99)) return drop('bad order');
+  if (CONFIG.paperMode || !isDailyAuthed || !dailyWs || dailyWs.readyState !== WebSocket.OPEN) return drop('venue not ready');
+  if (lgbSending || Object.keys(lgb.orders).length) return drop('previous order pending');
+  const m = markets.get(o.slug);
+  if (!m?.marketPda || !m.marketId || !m.endMs || m.endMs - t0 < 10000) return drop('market unknown or closing');
+  const outcome = o.side === 'up' ? 0 : 1, tokenId = `${m.marketPda}:${outcome}`, buy = o.act !== 'sell', feeBps = m.feeRateBps ?? 700;
+  let shares;
+  if (buy) {
+    if (!lgb.halted && lgb.cash < LGB.haltBelow) {
+      lgb.halted = true; saveLgb();
+      console.warn(new Date().toISOString(), `[LGB HALT] cash ${lgb.cash.toFixed(2)} USD below ${LGB.haltBelow} USD: no more leg buys`);
+    }
+    if (lgb.halted) return drop('halted');
+    const cap = (lgb.cap[o.slug] ??= LGB.capFrac * lgb.cash); // fixed at the round's first leg buy, as the backtest's 5 % cap
+    const room = Math.min(cap - (lgb.spent[o.slug] || 0), lgb.cash - 0.5);
+    shares = Math.min(Math.floor(Number(o.target) || 0), Math.floor(room / (o.limit + fee(o.limit, feeBps))));
+    if (!(shares >= 1) || shares * o.limit < 1) return drop(`room ${room.toFixed(2)} USD`); // the venue's 1 USD minimum
+  } else {
+    shares = Math.min(Number(o.shares) || 0, lgb.pos[tokenId]?.shares || 0);
+    if (!(shares > 0)) return drop('no leg shares');
+  }
+  lgbSending = true;
+  try {
+    const session = await getSession(!buy);
+    if (!session?.cashSession?.enabled) return drop('no trading session');
+    if (dailyWs.readyState !== WebSocket.OPEN) return drop('venue not ready');
+    const limitPriceMicros = BigInt(Math.round(o.limit * 1e6)), sharesMicros = BigInt(Math.round(shares * 1e6));
+    const maxNotional = buy
+      ? (sharesMicros * limitPriceMicros) / 1_000_000n + (sharesMicros * BigInt(feeBps) * limitPriceMicros * (1_000_000n - limitPriceMicros)) / (10_000n * 1_000_000n * 1_000_000n)
+      : 0xffffffffffffffffn;
+    const { frame, requestId } = buildOrderFrame(session, { marketPda: m.marketPda, side: buy ? 'buy' : 'sell', outcomeIndex: outcome, limitPriceMicros, sharesMicros, maxNotional, minFillShares: buy ? 1_000_000n : 1n });
+    lgb.orders[requestId] = { k: o.k, act: o.act, slug: o.slug, tokenId, marketId: m.marketId, marketPda: m.marketPda, outcome, endMs: m.endMs, buy, shares, limit: o.limit, sentAt: Date.now() };
+    lgbTouch(tokenId); saveLgb();
+    dailyWs.send(JSON.stringify(frame));
+    if (buy) spendNonce();
+    console.log(new Date().toISOString(), `[LGB ${o.act.toUpperCase()}] ${o.slug} ${o.side} shares=${shares} limit=${o.limit} p=${o.p} lag=${Date.now() - t0}ms cash=${lgb.cash.toFixed(2)}$`);
+    logTrade({ event: 'lgb_order_sent', requestId, ...lgb.orders[requestId], p: o.p, t_model: o.t });
+  } finally {
+    lgbSending = false;
+  }
+}
+
+function lgbResult(msg) {
+  const o = lgb.orders[msg.requestId];
+  if (msg.type === 'daily_markets_trade_executed') {
+    const e = msg.execution || {}, sh = Number(e.acceptedSize) / 1_000_000;
+    if (!(sh > 0) || o.filled) return;
+    const notional = Number(e.acceptedNotional || 0) / 1_000_000, fe = Number(e.acceptedFee || 0) / 1_000_000;
+    o.filled = { sh, usd: o.buy ? notional + fe : notional - fe, fe }; // a buy costs notional + fee, a sale brings notional - fee
+    lgbBook(o, o.filled, 1);
+    lgbReply({ k: o.k, sh, cost: o.filled.usd, fe, st: 'filled' });
+    console.log(new Date().toISOString(), `[LGB FILLED] ${o.slug} ${o.act} ${sh} shares, ${o.buy ? 'cost' : 'proceeds'} ${o.filled.usd.toFixed(4)}$ cash=${lgb.cash.toFixed(2)}$`);
+  } else {
+    o.processed = true; o.processedAt = Date.now(); // without an accepted size, lgbTick closes it as empty 1 s later
+  }
+  if (o.filled && o.processed) delete lgb.orders[msg.requestId];
+  saveLgb();
+}
+
+function lgbError(msg) {
+  const o = lgb.orders[msg.requestId];
+  delete lgb.orders[msg.requestId];
+  if (o.filled) lgbBook(o, o.filled, -1);
+  lgbTouch(o.tokenId); saveLgb();
+  lgbReply({ k: o.k, sh: 0, cost: 0, fe: 0, st: 'rejected', code: msg.code });
+  console.warn(new Date().toISOString(), `[LGB REJECTED] ${o.slug} ${o.act} code=${msg.code}${o.filled ? ', accepted fill taken back' : ''} cash=${lgb.cash.toFixed(2)}$`);
+}
+
+// Order timeouts, settlement from the venue's verdict, pruning (every second)
+function lgbTick() {
+  const now = Date.now();
+  for (const [rid, o] of Object.entries(lgb.orders)) {
+    const empty = o.processed && !o.filled && now - o.processedAt > 1000;
+    if (!empty && now - o.sentAt < LGB.orderTimeoutMs) continue;
+    delete lgb.orders[rid]; lgbTouch(o.tokenId); saveLgb();
+    if (!o.filled) lgbReply({ k: o.k, sh: 0, cost: 0, fe: 0, st: empty ? 'empty' : 'timeout' });
+    if (empty) console.log(new Date().toISOString(), `[LGB EMPTY] ${o.slug} ${o.act} processed with nothing filled`);
+    else console.warn(new Date().toISOString(), `[LGB TIMEOUT] ${o.slug} ${o.act} ${o.filled ? 'accepted, never processed' : 'no venue answer'} after ${LGB.orderTimeoutMs / 1000} s`);
+  }
+  for (const [tokenId, p] of Object.entries(lgb.pos)) {
+    if (p.endMs + 2000 <= now && !(p.nextTry > now) && !lgbFetching.has(tokenId)) lgbSettle(tokenId, p);
+  }
+  const old = now / 1000 - 3600;
+  for (const d of [lgb.spent, lgb.cap]) for (const s of Object.keys(d)) if (+s.split('-').pop() < old) delete d[s];
+  for (const [t, ms] of Object.entries(lgb.touched)) if (now - ms > 3600000) delete lgb.touched[t];
+}
+
+async function lgbSettle(tokenId, p) {
+  lgbFetching.add(tokenId);
+  p.tries = (p.tries || 0) + 1; p.nextTry = Date.now() + (p.tries < 40 ? 3000 : 30000);
+  try {
+    const r = await fetch(`https://daily.fun/chain-api/daily-markets/${p.marketId}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(5000) });
+    const mk = r.ok ? (await r.json())?.market : null;
+    if (mk?.state !== 'resolved' || lgb.pos[tokenId] !== p) return;
+    const pay = Number(mk.payoutVector?.[p.outcome]) / 1_000_000; // 1 USD per share to the winning outcome
+    if (!(pay >= 0 && pay <= 1)) return;
+    lgb.cash += p.shares * pay; delete lgb.pos[tokenId]; lgbTouch(tokenId); saveLgb();
+    console.log(new Date().toISOString(), `[LGB SETTLED] ${p.slug} outcome ${p.outcome}: ${p.shares} shares x ${pay} = ${(p.shares * pay).toFixed(2)}$ cash=${lgb.cash.toFixed(2)}$`);
+    logTrade({ event: 'lgb_settled', slug: p.slug, outcome: p.outcome, shares: p.shares, payout: pay, cash: lgb.cash });
+  } catch {} finally {
+    lgbFetching.delete(tokenId);
+  }
+}
 
 async function resolveVaultUsdcAta() {
   if (vaultUsdcAta) return vaultUsdcAta;
@@ -809,6 +972,7 @@ function findPositionByRequest(requestId) {
 // 'executed' means accepted (state prepared, filledSize 0); only 'processed' confirms on-chain.
 function trackOrderResult(msg) {
   if (msg.type === 'daily_markets_trade_processed') invalidateSession(); // a processed buy has consumed the cash nonce
+  if (lgb?.orders[msg.requestId]) return lgbResult(msg);
   const [slug, pos] = findPositionByRequest(msg.requestId);
   if (!pos) return;
   const isSell = pos.pendingSell?.requestId === msg.requestId;
@@ -837,10 +1001,14 @@ function trackOrderResult(msg) {
 // in the middle of a sell, and a partial fill, without trusting our bookkeeping of request results.
 function syncVenuePositions(list) {
   let changed = false;
+  const botSides = new Set();
   for (const [slug, pos] of activePositions.entries()) {
+    const tokenId = `${pos.market?.marketPda}:${pos.targetOutcome}`;
+    botSides.add(tokenId);
     const v = list.find((x) => x.market?.marketPda === pos.market?.marketPda && x.outcomeIndex === pos.targetOutcome);
     if (!v) continue;
-    const qty = Number(v.quantity) / 1_000_000;
+    if (lgbBusy(tokenId)) continue; // a leg order on this side may not show in the venue's quantity yet
+    const qty = Number(v.quantity) / 1_000_000 - (lgb?.pos[tokenId]?.shares || 0); // the venue's quantity holds both strategies' shares
     if (!Number.isFinite(qty)) continue;
     if (!pos.buyProcessed && !(pos.buySentAt && Date.now() - pos.buySentAt > 15000) && pos.buySentAt) continue; // buy still in flight
     if (pos.pendingSell) {
@@ -856,10 +1024,21 @@ function syncVenuePositions(list) {
     }
   }
   if (changed) saveBotState();
+  // A side only the leg holds: the venue is the truth on its size (shares only; a fill whose answer was lost leaves its cost unbooked)
+  for (const [tokenId, p] of Object.entries(lgb?.pos || {})) {
+    if (botSides.has(tokenId) || p.endMs - Date.now() < 15000 || lgbBusy(tokenId)) continue;
+    const v = list.find((x) => x.market?.marketPda === p.marketPda && x.outcomeIndex === p.outcome);
+    const qty = v ? Number(v.quantity) / 1_000_000 : NaN;
+    if (!Number.isFinite(qty) || Math.abs(qty - p.shares) < 1e-6) continue;
+    console.warn(new Date().toISOString(), `[LGB SYNC] ${p.slug} leg shares ${p.shares} -> ${qty}`);
+    if (qty < 1e-6) delete lgb.pos[tokenId]; else p.shares = qty;
+    lgbTouch(tokenId); saveLgb();
+  }
 }
 
 function trackOrderError(msg) {
   invalidateSession();
+  if (lgb?.orders[msg.requestId]) return lgbError(msg);
   const [slug, pos] = findPositionByRequest(msg.requestId);
   if (!pos) return;
   if (pos.pendingSell?.requestId === msg.requestId) {
@@ -1081,13 +1260,14 @@ function evaluateStrategy() {
 
   updateUsdcBalance();
 
-  // Trailing floor (blocks NEW entries only)
+  // Trailing floor (blocks NEW entries only), on the bot's own balance: the wallet minus the LightGBM leg's cash
   const dynamicFloor = balanceFloor();
-  if (currentUsdcBalance !== null && currentUsdcBalance <= dynamicFloor && now - lastFloorLog > 60000) {
+  const botBal = botBalance();
+  if (botBal !== null && botBal <= dynamicFloor && now - lastFloorLog > 60000) {
     lastFloorLog = now;
-    console.warn(new Date().toISOString(), `[FLOOR] balance ${currentUsdcBalance.toFixed(2)}$ <= floor ${dynamicFloor.toFixed(2)}$ (peak ${peakBalance?.toFixed(2)}$): new entries paused; after a withdrawal restart with RESET_PEAK=1`);
+    console.warn(new Date().toISOString(), `[FLOOR] balance ${botBal.toFixed(2)}$ <= floor ${dynamicFloor.toFixed(2)}$ (peak ${peakBalance?.toFixed(2)}$): new entries paused; after a withdrawal restart with RESET_PEAK=1`);
   }
-  if (currentUsdcBalance === null || (now - lastBalanceCheck > 60000) || currentUsdcBalance <= dynamicFloor) {
+  if (botBal === null || (now - lastBalanceCheck > 60000) || botBal <= dynamicFloor) {
     return;
   }
 
@@ -1095,7 +1275,8 @@ function evaluateStrategy() {
     lastHeartbeat = now;
     const activeBtc = Array.from(markets.values()).filter(m => m.symbol === 'BTC' && m.endMs > now);
     const nextRounds = activeBtc.map(m => `${m.slug} (${((m.endMs - now)/1000).toFixed(0)}s left)`).join(', ');
-    console.log(new Date().toISOString(), `[HEARTBEAT] bf=${currentBfPrice?.toFixed(1)} ticks=${priceHistory.length} sigmaM=${sigmaM ? sigmaM.toFixed(3) : 'warmup'} usdc=${currentUsdcBalance.toFixed(2)}$ floor=${dynamicFloor.toFixed(2)}$ authed=${isDailyAuthed} | ${nextRounds}`);
+    const leg = lgb ? ` bot=${botBal.toFixed(2)}$ lgb=${lgb.cash.toFixed(2)}$/${Object.keys(lgb.pos).length}pos${lgb.halted ? '/HALTED' : ''}` : '';
+    console.log(new Date().toISOString(), `[HEARTBEAT] bf=${currentBfPrice?.toFixed(1)} ticks=${priceHistory.length} sigmaM=${sigmaM ? sigmaM.toFixed(3) : 'warmup'} usdc=${currentUsdcBalance.toFixed(2)}$ floor=${dynamicFloor.toFixed(2)}$${leg} authed=${isDailyAuthed} | ${nextRounds}`);
   }
 
   if (!sigmaM || sigmaM >= CONFIG.calmVolThreshold) {
@@ -1198,7 +1379,7 @@ async function executeTrade(params) {
     console.warn(new Date().toISOString(), 'SKIPPING TRADE: USDC balance not yet verified');
     return;
   }
-  const balance = currentUsdcBalance;
+  const balance = botBalance(); // the wallet minus the LightGBM leg's cash
   const dynamicFloor = balanceFloor();
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
   let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
@@ -1269,25 +1450,6 @@ async function executeTrade(params) {
 
   console.log(new Date().toISOString(), `[SIZING] balance=${balance.toFixed(2)}$ targetSpend=${targetSpend.toFixed(2)}$ notional=${(Number(baseNotionalMicros)/1e6).toFixed(2)}$ buying=${sharesToBuy} limitPrice=${limitPriceToUse}`);
 
-  const salt = BigInt(Math.floor(Math.random() * 1e15));
-  const expiry = Math.floor(Date.now() / 1000) + 4;
-  const requestId = crypto.randomUUID();
-  const clientOrderId = crypto.randomUUID();
-
-  const intent = {
-    side: 'buy',
-    outcomeIndex: params.targetOutcome,
-    timeInForce: 'fak',
-    limitPriceMicros,
-    maxShares: sharesMicros,
-    maxNotional,
-    minFillShares: 1_000_000n,
-    salt,
-    expiry
-  };
-
-  const marketPda = new PublicKey(params.market.marketPda);
-
   prewarmMarket(params.market.marketPda); // no-op when done at discovery
   const freshSession = await getSession(); // cached; waits on HTTP only when the cache is cold
 
@@ -1296,58 +1458,9 @@ async function executeTrade(params) {
     return;
   }
 
-  const liveVaultPda = new PublicKey(freshSession.vault);
-  const liveSessionPda = new PublicKey(freshSession.session);
-  const currentNonce = BigInt(freshSession.cashSession.nextNonce);
-
-  const intentHash = buildIntentHash(intent, CONFIG.programId, marketPda, CONFIG.usdcMint, OWNER, liveVaultPda, liveSessionPda);
-  const signature = nacl.sign.detached(intentHash, SECRET_KEY);
-  const signatureB64 = Buffer.from(signature).toString('base64');
-
-  // Root Cash Authorization
-  const cashHash = buildCashActionHash(freshSession.cashSession, intentHash, maxNotional, expiry, currentNonce);
-  const cashSig = nacl.sign.detached(cashHash, SECRET_KEY);
-  const cashSignatureB64 = Buffer.from(cashSig).toString('base64');
-
-  const cashAuthorization = {
-    protocolVersion: 1,
-    sessionAuthority: AUTHORITY.toBase58(),
-    sessionGeneration: freshSession.cashSession.sessionGeneration.toString(),
-    deploymentDomain: freshSession.cashSession.deploymentDomain.toLowerCase(),
-    amount: maxNotional.toString(),
-    expiry: expiry,
-    nonce: currentNonce.toString(),
-    signature: cashSignatureB64
-  };
-
-  const tradeFrame = {
-    type: 'daily_markets_trade',
-    requestId,
-    clientOrderId,
-    observeProcessed: true,
-    acceptQueued: true,
-    routeRevision: 1,
-    cashAuthorization,
-    intent: {
-      protocolVersion: 4,
-      market: marketPda.toBase58(),
-      owner: OWNER.toBase58(),
-      sessionAuthority: AUTHORITY.toBase58(),
-      takerVault: liveVaultPda.toBase58(),
-      tradingSession: liveSessionPda.toBase58(),
-      usdcMint: CONFIG.usdcMint.toBase58(),
-      side: intent.side,
-      outcomeIndex: intent.outcomeIndex,
-      timeInForce: intent.timeInForce,
-      limitPriceMicros: intent.limitPriceMicros.toString(),
-      maxShares: intent.maxShares.toString(),
-      maxNotional: intent.maxNotional.toString(),
-      minFillShares: intent.minFillShares.toString(),
-      salt: intent.salt.toString(),
-      expiry: intent.expiry,
-      signature: signatureB64
-    }
-  };
+  const { frame: tradeFrame, requestId, clientOrderId } = buildOrderFrame(freshSession, {
+    marketPda: params.market.marketPda, side: 'buy', outcomeIndex: params.targetOutcome, limitPriceMicros, sharesMicros, maxNotional, minFillShares: 1_000_000n
+  });
 
   const t_sent_ms = Date.now();
   console.log(new Date().toISOString(), CONFIG.paperMode ? '[PAPER] TRADE SIGNAL:' : '[LIVE] SUBMITTING TRADE:', JSON.stringify({
@@ -1422,6 +1535,55 @@ async function executeTrade(params) {
   saveBotState();
 }
 
+// One signed FAK order for the Daily WS, used by the bot and the LightGBM leg. A buy carries the cash authorization of its
+// maxNotional at the session's next nonce; a sell signs none (the Daily.fun protocol omits it for taker sells).
+function buildOrderFrame(session, { marketPda, side, outcomeIndex, limitPriceMicros, sharesMicros, maxNotional, minFillShares }) {
+  const salt = BigInt(Math.floor(Math.random() * 1e15));
+  const expiry = Math.floor(Date.now() / 1000) + 4;
+  const requestId = crypto.randomUUID();
+  const clientOrderId = crypto.randomUUID();
+  const intent = { side, outcomeIndex, timeInForce: 'fak', limitPriceMicros, maxShares: sharesMicros, maxNotional, minFillShares, salt, expiry };
+  const market = new PublicKey(marketPda);
+  const vault = new PublicKey(session.vault);
+  const tradingSession = new PublicKey(session.session);
+  const intentHash = buildIntentHash(intent, CONFIG.programId, market, CONFIG.usdcMint, OWNER, vault, tradingSession);
+  const frame = { type: 'daily_markets_trade', requestId, clientOrderId, observeProcessed: true, acceptQueued: true, routeRevision: 1 };
+  if (side === 'buy') {
+    const nonce = BigInt(session.cashSession.nextNonce);
+    const cashSig = nacl.sign.detached(buildCashActionHash(session.cashSession, intentHash, maxNotional, expiry, nonce), SECRET_KEY);
+    frame.cashAuthorization = {
+      protocolVersion: 1,
+      sessionAuthority: AUTHORITY.toBase58(),
+      sessionGeneration: session.cashSession.sessionGeneration.toString(),
+      deploymentDomain: session.cashSession.deploymentDomain.toLowerCase(),
+      amount: maxNotional.toString(),
+      expiry,
+      nonce: nonce.toString(),
+      signature: Buffer.from(cashSig).toString('base64')
+    };
+  }
+  frame.intent = {
+    protocolVersion: 4,
+    market: market.toBase58(),
+    owner: OWNER.toBase58(),
+    sessionAuthority: AUTHORITY.toBase58(),
+    takerVault: vault.toBase58(),
+    tradingSession: tradingSession.toBase58(),
+    usdcMint: CONFIG.usdcMint.toBase58(),
+    side,
+    outcomeIndex,
+    timeInForce: 'fak',
+    limitPriceMicros: limitPriceMicros.toString(),
+    maxShares: sharesMicros.toString(),
+    maxNotional: maxNotional.toString(),
+    minFillShares: minFillShares.toString(),
+    salt: salt.toString(),
+    expiry,
+    signature: Buffer.from(nacl.sign.detached(intentHash, SECRET_KEY)).toString('base64')
+  };
+  return { frame, requestId, clientOrderId };
+}
+
 // Dynamic Stop-Loss / Cash Out Execution
 async function executeCashOut(params) {
   try {
@@ -1448,58 +1610,9 @@ async function executeCashOut(params) {
       return;
     }
 
-    const liveVaultPda = new PublicKey(freshSession.vault);
-    const liveSessionPda = new PublicKey(freshSession.session);
-    const marketPda = new PublicKey(params.market.marketPda);
-    const salt = BigInt(Math.floor(Math.random() * 1e15));
-    const expiry = Math.floor(Date.now() / 1000) + 4;
-    const requestId = crypto.randomUUID();
-    const clientOrderId = crypto.randomUUID();
-
-    const intent = {
-      side: 'sell',
-      outcomeIndex: params.outcomeIndex,
-      timeInForce: 'fak',
-      limitPriceMicros,
-      maxShares: sharesMicros,
-      maxNotional,
-      minFillShares: 1n,
-      salt,
-      expiry
-    };
-
-    const intentHash = buildIntentHash(intent, CONFIG.programId, marketPda, CONFIG.usdcMint, OWNER, liveVaultPda, liveSessionPda);
-    const signature = nacl.sign.detached(intentHash, SECRET_KEY);
-    const signatureB64 = Buffer.from(signature).toString('base64');
-
-    const sellFrame = {
-      type: 'daily_markets_trade',
-      requestId,
-      clientOrderId,
-      observeProcessed: true,
-      acceptQueued: true,
-      routeRevision: 1,
-      // cashAuthorization omitted for taker sell orders per Daily.fun protocol
-      intent: {
-        protocolVersion: 4,
-        market: marketPda.toBase58(),
-        owner: OWNER.toBase58(),
-        sessionAuthority: AUTHORITY.toBase58(),
-        takerVault: liveVaultPda.toBase58(),
-        tradingSession: liveSessionPda.toBase58(),
-        usdcMint: CONFIG.usdcMint.toBase58(),
-        side: intent.side,
-        outcomeIndex: intent.outcomeIndex,
-        timeInForce: intent.timeInForce,
-        limitPriceMicros: intent.limitPriceMicros.toString(),
-        maxShares: intent.maxShares.toString(),
-        maxNotional: intent.maxNotional.toString(),
-        minFillShares: intent.minFillShares.toString(),
-        salt: intent.salt.toString(),
-        expiry: intent.expiry,
-        signature: signatureB64
-      }
-    };
+    const { frame: sellFrame, requestId } = buildOrderFrame(freshSession, {
+      marketPda: params.market.marketPda, side: 'sell', outcomeIndex: params.outcomeIndex, limitPriceMicros, sharesMicros, maxNotional, minFillShares: 1n
+    });
 
     if (!dailyWs || dailyWs.readyState !== WebSocket.OPEN) {
       console.warn(new Date().toISOString(), `[CASHOUT SKIPPED] ${params.slug} Daily WS not open`);
@@ -1526,6 +1639,7 @@ async function executeCashOut(params) {
 initBinance();
 initDaily();
 setInterval(evaluateStrategy, 200);
+if (lgb) setInterval(lgbTick, 1000);
 setInterval(refreshPrivySession, 20 * 60 * 1000);
 fetchSession();
 setInterval(fetchSession, 10000);

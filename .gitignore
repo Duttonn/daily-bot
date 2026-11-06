@@ -22,3 +22,6 @@ node_modules/
 *.bak
 *.pre-cash
 .DS_Store
+
+# LightGBM leg ledger (runtime)
+lgb-state.json

@@ -3,6 +3,7 @@
 //   node test/stop-path.mjs [botFile]                 run the scenarios, exit 1 on any failure
 //   node test/stop-path.mjs --build-probe <out> [bot] write the one-shot live probe build
 import { spawn } from 'node:child_process';
+import dgram from 'node:dgram';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,8 +63,9 @@ const { EventEmitter } = require('node:events');
 const scenario = process.env.SCENARIO;
 const PDA = 'So11111111111111111111111111111111111111112';
 const startSec = Math.ceil(Date.now() / 1000) + 2;
-const endSec = startSec + 96;
+const endSec = startSec + (scenario === 'lgb_settle' ? 14 : 96);
 const slug = 'btc-updown-5m-' + startSec;
+console.log('HARNESS_SLUG ' + slug);
 const level = (price) => [{ price, sizeShares: 100 }];
 const book = (tokenId) => ({ type: 'updown_book', tokenId, bids: level(0.5), asks: level(0.52), stale: false });
 let sells = 0, buys = 0;
@@ -88,21 +90,25 @@ class WebSocket extends EventEmitter {
     const m = JSON.parse(raw);
     if (m.type === 'auth') this.reply({ type: 'authed', wallet: 'x' });
     if (m.type === 'updown_subscribe') {
-      this.reply({ type: 'updown_markets', markets: [{ slug, symbol: 'BTC', marketPda: PDA, feeRateBps: 700, roundId: 'updown:BTC:' + startSec + ':' + endSec,
+      if (scenario === 'lgb_shared') this.reply({ type: 'updown_update', nativePositions: [{ market: { marketPda: PDA }, outcomeIndex: 1, quantity: '11000000' }] }, 200);
+      this.reply({ type: 'updown_markets', markets: [{ slug, symbol: 'BTC', marketPda: PDA, marketId: 'MID1', feeRateBps: 700, roundId: 'updown:BTC:' + startSec + ':' + endSec,
         outcomes: [{ tokenId: PDA + ':0', book: { bids: level(0.5), asks: level(0.52), stale: false } }, { tokenId: PDA + ':1', book: { bids: level(0.46), asks: level(0.48), stale: false } }] }] });
       setInterval(() => { this.emit('message', JSON.stringify(book(PDA + ':0'))); this.emit('message', JSON.stringify(book(PDA + ':1'))); }, 500);
     }
     if (m.type === 'daily_markets_trade') { note(m); this.onTrade(m); }
   }
-  accept(m, size, withProcessed = true) {
-    this.reply({ type: 'daily_markets_trade_executed', requestId: m.requestId, execution: { side: m.intent.side, state: 'prepared', filledSize: '0', acceptedSize: String(size), market: m.intent.market } });
+  accept(m, size, withProcessed = true) { // filled at the limit, venue fee 7 % x p x (1 - p) per share
+    const sz = BigInt(size), lim = BigInt(m.intent.limitPriceMicros);
+    const notional = (sz * lim) / 1000000n, fee = (sz * 700n * lim * (1000000n - lim)) / (10000n * 1000000n * 1000000n);
+    this.reply({ type: 'daily_markets_trade_executed', requestId: m.requestId, execution: { side: m.intent.side, state: 'prepared', filledSize: '0', acceptedSize: String(size),
+      acceptedNotional: String(notional), acceptedFee: String(fee), market: m.intent.market } });
     if (withProcessed) this.reply({ type: 'daily_markets_trade_processed', requestId: m.requestId, status: 'processed' }, 300);
   }
   reject(m) { this.reply({ type: 'daily_markets_error', requestId: m.requestId, stage: 'execute', code: 'MATCHER_LIQUIDITY_CHANGED', message: 'x' }); }
   onTrade(m) {
     if (m.intent.side === 'buy') {
       buys++;
-      if (scenario === 'buy_rejected') return this.reject(m);
+      if (scenario === 'buy_rejected' || scenario === 'lgb_reject') return this.reject(m);
       if (scenario === 'buy_silent') return; // the venue never answers this buy
       return this.accept(m, m.intent.maxShares);
     }
@@ -137,12 +143,16 @@ globalThis.fetch = async (url, opts) => {
       vault: key, session: key, sessionGeneration: '1', adapterProgram: key, destination: key } } };
   } else if (body.method === 'getTokenAccountBalance') {
     json = { result: { value: { uiAmount: 400 } } };
+  } else if (String(url).includes('/daily-markets/MID1')) { // the venue's verdict: Up won
+    json = { market: { state: 'resolved', payoutVector: ['1000000', '0'] } };
   }
   return { ok: true, status: 200, json: async () => json };
 };
 `;
 
-function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFiles = {}) {
+// lgb = { port, replyPort, intents: [{ at, o }] }: runs the LightGBM leg; each intent goes to the bot `at` ms after the fake market
+// is announced, with that market's slug; the bot's answers are collected from replyPort.
+function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFiles = {}, lgb = null) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stop-path-'));
   if (seedState) fs.writeFileSync(path.join(dir, 'bot-state.json'), JSON.stringify(seedState));
   for (const [name, body] of Object.entries(seedFiles)) fs.writeFileSync(path.join(dir, name), body);
@@ -154,11 +164,23 @@ function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFile
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
   fs.writeFileSync(path.join(dir, 'bot.mjs'), botSource);
   const env = { PATH: process.env.PATH, SCENARIO: scenario, STOP_PROBE_SHARES: '6', OWNER_ADDRESS: '11111111111111111111111111111111',
-    SESSION_SECRET_KEY: JSON.stringify(Array(64).fill(7)), PRIVY_TOKEN: 'x', PRIVY_REFRESH_TOKEN: 'x', ENV_FILE: path.join(dir, 'none'), AUTH_FILE: path.join(dir, 'none'), ...extraEnv };
+    SESSION_SECRET_KEY: JSON.stringify(Array(64).fill(7)), PRIVY_TOKEN: 'x', PRIVY_REFRESH_TOKEN: 'x', ENV_FILE: path.join(dir, 'none'), AUTH_FILE: path.join(dir, 'none'),
+    ...(lgb ? { LGB_PORT: String(lgb.port), LGB_REPLY_PORT: String(lgb.replyPort) } : {}), ...extraEnv };
+  const replies = [];
+  const rsock = lgb ? dgram.createSocket('udp4') : null;
+  if (rsock) { rsock.on('message', (b) => replies.push(JSON.parse(b))); rsock.bind(lgb.replyPort, '127.0.0.1'); }
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['--import', path.join(dir, 'fetch-stub.mjs'), 'bot.mjs'], { cwd: dir, env });
-    let out = '';
-    child.stdout.on('data', (d) => (out += d));
+    let out = '', slugSeen = false;
+    child.stdout.on('data', (d) => {
+      out += d;
+      const mm = lgb && !slugSeen && out.match(/HARNESS_SLUG (\S+)/);
+      if (!mm) return;
+      slugSeen = true;
+      for (const { at, o } of lgb.intents) {
+        setTimeout(() => { const s = dgram.createSocket('udp4'); s.send(JSON.stringify({ slug: mm[1], ...o }), lgb.port, '127.0.0.1', () => s.close()); }, at);
+      }
+    });
     child.stderr.on('data', (d) => (out += d));
     setTimeout(() => child.kill('SIGKILL'), ms);
     child.on('close', () => {
@@ -167,8 +189,11 @@ function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFile
       const state = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath, 'utf8')) : null;
       const histPath = path.join(dir, 'price-history.json');
       const saved = fs.existsSync(histPath) ? JSON.parse(fs.readFileSync(histPath, 'utf8')) : null;
+      const lgbPath = path.join(dir, 'lgb-state.json');
+      const lgbState = fs.existsSync(lgbPath) ? JSON.parse(fs.readFileSync(lgbPath, 'utf8')) : null;
       fs.rmSync(dir, { recursive: true, force: true });
-      resolve({ frames, state, out, saved });
+      if (rsock) rsock.close();
+      resolve({ frames, state, out, saved, replies, lgbState });
     });
   });
 }
@@ -188,6 +213,29 @@ if (argv[0] === '--build-probe') {
 const bot = withProbeHooks(fs.readFileSync(argv[0] || path.join(ROOT, 'daily-s6-bot.mjs'), 'utf8'));
 // 10 min of saved ticks ending `ageMs` ago, as a previous run would leave them
 const savedTicks = (ageMs) => { const end = Date.now() - ageMs, out = []; let p = 80000; for (let t = end - 600000; t <= end; t += 100) { p += Math.sin(t / 7000) * 0.8; out.push([t, p]); } return JSON.stringify(out); };
+// LightGBM leg: the bot file as deployed (no probe hooks); in 25 s it warms up and makes no trade of its own
+const rawBot = fs.readFileSync(argv[0] || path.join(ROOT, 'daily-s6-bot.mjs'), 'utf8');
+const FAKE_PDA = 'So11111111111111111111111111111111111111112';
+const legOrders = [
+  { at: 800, o: { k: 'k1', act: 'entry', side: 'up', limit: 0.53, target: 200, p: 0.7 } },
+  { at: 900, o: { k: 'k2', act: 'entry', side: 'up', limit: 0.53, target: 200 } },
+  { at: 2500, o: { k: 'k3', act: 'add', side: 'up', limit: 0.53, target: 200 } },
+  { at: 4000, o: { k: 'k4', act: 'sell', side: 'up', limit: 0.48, shares: 9 } },
+  { at: 5500, o: { k: 'k5', act: 'sell', side: 'up', limit: 0.48, shares: 9 } },
+];
+const seedLeg = (cash, pos = {}) => JSON.stringify({ cash, halted: false, pos, spent: {}, cap: {}, orders: {}, touched: {}, changedAt: 0 });
+const peak400 = { tradedRounds: [], activePositions: [], peakBalance: 400 };
+const sharedEnd = Date.now() + 90000; // a bot position of 6 down shares and a leg position of 5 on the same side: the venue shows 11
+const sharedBot = { tradedRounds: [], peakBalance: 400, activePositions: [['btc-updown-5m-seed', { targetOutcome: 1, targetSideName: 'down', sharesBought: 6, f0: 80000,
+  entryPrice: 0.48, entryTau: 200, cashoutAttempted: false, marketPda: FAKE_PDA, marketEndMs: sharedEnd, marketFeeRateBps: 700, buyAccepted: true, buyProcessed: true }]] };
+const sharedLeg = seedLeg(95, { [FAKE_PDA + ':1']: { slug: 'btc-updown-5m-seed', marketId: 'MID1', marketPda: FAKE_PDA, outcome: 1, endMs: sharedEnd, shares: 5 } });
+const [legBuy, legSettle, legShared, legHalt, legReject] = await Promise.all([
+  runScenario(rawBot, 'lgb_buy', 12500, peak400, {}, {}, { port: 47301, replyPort: 47302, intents: legOrders }),
+  runScenario(rawBot, 'lgb_settle', 24000, peak400, {}, {}, { port: 47303, replyPort: 47304, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_shared', 6000, sharedBot, {}, { 'lgb-state.json': sharedLeg }, { port: 47305, replyPort: 47306, intents: [] }),
+  runScenario(rawBot, 'lgb_halt', 5000, peak400, {}, { 'lgb-state.json': seedLeg(49) }, { port: 47307, replyPort: 47308, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_reject', 6000, peak400, {}, {}, { port: 47309, replyPort: 47310, intents: [legOrders[0]] }),
+]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
@@ -253,5 +301,28 @@ check('history: a fresh save is restored and the first heartbeat has a sigma', h
 check('history: the bot rewrites the file with its live ticks after the restored ones', histFresh.saved?.length > 6001 && histFresh.saved.at(-1)[0] - histFresh.saved[6000][0] > 5000);
 check('history: a save older than 60 s is skipped and the bot warms up', histStale.out.includes('[HISTORY SKIPPED]') && firstHb(histStale).includes('sigmaM=warmup'));
 check('history: without a save the bot warms up as before', firstHb(partial).includes('sigmaM=warmup'));
+
+const rep = (r, k) => r.replies.find((x) => x.k === k) || {};
+const near = (a, b) => Math.abs(a - b) < 1e-6;
+const legPos = (r) => Object.keys(r.lgbState?.pos || {}).length;
+check('leg off without LGB_PORT: no leg file, no leg line', partial.lgbState === null && !partial.out.includes('[LGB'));
+check('leg: a new leg takes its 100 USD off the bot peak, 400 -> 300', legBuy.out.includes('bot peak 400 -> 300 USD'));
+let f = legBuy.frames;
+check(`leg: entry sized to 5 % of the leg cash, ${Number(f[0]?.maxShares) / 1e6} shares at 0.53 with the cash authorization`, f[0]?.side === 'buy' && f[0].maxShares === '9000000' && f[0].limit === '530000' && f[0].hasCash);
+check(`leg: fill answered with the venue cost ${rep(legBuy, 'k1').cost} USD (9 x 0.53 + fee)`, rep(legBuy, 'k1').st === 'filled' && rep(legBuy, 'k1').sh === 9 && near(rep(legBuy, 'k1').cost, 4.926933));
+check(`leg: an order while the previous one is in flight is dropped (${rep(legBuy, 'k2').why})`, rep(legBuy, 'k2').st === 'dropped' && /pending/.test(rep(legBuy, 'k2').why));
+check(`leg: an add beyond the round cap is dropped (${rep(legBuy, 'k3').why})`, rep(legBuy, 'k3').st === 'dropped' && /room/.test(rep(legBuy, 'k3').why));
+check('leg: the sale asks for the leg\'s 9 shares, no cash authorization, u64 maxNotional', f[1]?.side === 'sell' && f[1].maxShares === '9000000' && !f[1].hasCash && f[1].maxNotional === MAX_U64);
+check(`leg: sale answered with proceeds net of fee ${rep(legBuy, 'k4').cost} USD`, rep(legBuy, 'k4').st === 'filled' && near(rep(legBuy, 'k4').cost, 4.162752));
+check('leg: a sale without leg shares is dropped', rep(legBuy, 'k5').st === 'dropped' && f.length === 2);
+check(`leg: ledger cash ${legBuy.lgbState?.cash} USD = 100 - 4.926933 + 4.162752, no position`, near(legBuy.lgbState?.cash, 99.235819) && legPos(legBuy) === 0);
+check('leg: the heartbeat shows the bot balance as the wallet minus the leg cash', legBuy.out.includes('usdc=400.00$ floor=195.00$ bot=300.76$ lgb=99.24$/0pos'));
+check(`leg: the bot peak stays ${legBuy.state?.peakBalance} while the wallet has not shown the leg's trades`, legBuy.state?.peakBalance === 300);
+check(`leg settle: the venue verdict pays the 9 up shares, cash ${legSettle.lgbState?.cash} USD`, legSettle.out.includes('[LGB SETTLED]') && near(legSettle.lgbState?.cash, 104.073067) && legPos(legSettle) === 0);
+s = sells(legShared);
+check(`leg shared side: the venue shows 11, the bot's stop sells its own ${Number(s[0]?.maxShares) / 1e6} shares`, s.length >= 1 && s[0].maxShares === '6000000' && !legShared.out.includes('-> 11'));
+check('leg shared side: the leg keeps its 5 shares', legShared.lgbState?.pos?.[FAKE_PDA + ':1']?.shares === 5 && legShared.out.includes('[CASHOUT FILLED]'));
+check('leg halt: below 50 USD the leg buys nothing and stays halted', rep(legHalt, 'k1').why === 'halted' && legHalt.lgbState?.halted === true && legHalt.frames.length === 0);
+check('leg reject: a venue rejection is answered and books nothing', rep(legReject, 'k1').st === 'rejected' && near(legReject.lgbState?.cash, 100) && legPos(legReject) === 0);
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
