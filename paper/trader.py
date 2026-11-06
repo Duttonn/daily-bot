@@ -214,7 +214,7 @@ class Trader:
             while g <= self.pol["gmax"] and rs + g <= t:
                 self.decide(R, g); g += 1
             R.g_next = g
-            n_proc = bisect.bisect_left(R.dec_t, t)   # decisions with t_g < t: processed by the simulator at this row
+            n_proc = (bisect.bisect_right if self.leg else bisect.bisect_left)(R.dec_t, t)   # decisions with t_g < t (leg: <= t) processed by the simulator at this row
             if n_proc > R.nproc: self.run_sim(R, n_proc); R.nproc = n_proc
             if t >= rs + 300: R.complete = True
         if t - self.last_trim > 600: self.trim(t)

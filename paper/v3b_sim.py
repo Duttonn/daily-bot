@@ -39,6 +39,7 @@ def sim_round(P, rs, prm, variant, model_dec=None, bot_dec=None, cfg=None, liq=T
     f0 = R["f0"]; rend = rs + 300.0; n = len(tt); up_wins = R["up"] if up_override is None else up_override  # override: placebo outcome on train only
     L = Liq(P, liq)
     lat_b, lat_s = prm["lat_buy"], prm["lat_sell"]
+    nf = n + 1 if fills is not None else n   # live leg: an order decided on the newest row goes out at once; its fill row (the next tick) is built later
     # fill_mode "real" (engine m7engine._real_row / _rtt, leak review): a row's data exist at stamp + max RTT; an order fills on
     # the first snapshot of that side newer than the decision row's, at or after landing (send + latency)
     real = prm.get("fill_mode", "base") == "real"
@@ -195,33 +196,33 @@ def sim_round(P, rs, prm, variant, model_dec=None, bot_dec=None, cfg=None, liq=T
             return limit, (int(size / (limit + fee(limit))) if size > 0 else 0)
         if h["up"] + h["down"] <= 1e-9:
             s = max(("up", "down"), key=lambda x: info[x][2])
-            if info[s][2] >= cfg["m_entry"] and kf < n:
+            if info[s][2] >= cfg["m_entry"] and kf < nf:
                 cands.append((info[s][2] * size / max(info[s][0], 0.01), "entry", s))
         else:
             for s in ("up", "down"):
                 if h[s] <= 1e-9: continue
                 o = OTHER[s]; gs = info[s][3]
-                if cfg["m_sell"] is not None and gs >= cfg["m_sell"] and ks < n:
+                if cfg["m_sell"] is not None and gs >= cfg["m_sell"] and ks < nf:
                     cands.append((gs * cfg["frac"] * h[s], "sell", s))
-                if cfg["m_flip"] is not None and info[o][2] >= cfg["m_flip"] and gs >= (cfg["m_sell"] if cfg["m_sell"] is not None else 0.0) and ks < n:
+                if cfg["m_flip"] is not None and info[o][2] >= cfg["m_flip"] and gs >= (cfg["m_sell"] if cfg["m_sell"] is not None else 0.0) and ks < nf:
                     cands.append((gs * h[s] + info[o][2] * size / max(info[o][0], 0.01), "flip", s))
-                if cfg["m_add"] is not None and info[s][2] >= cfg["m_add"] and kf < n:
+                if cfg["m_add"] is not None and info[s][2] >= cfg["m_add"] and kf < nf:
                     cands.append((info[s][2] * size / max(info[s][0], 0.01), "add", s))
         if not cands: return
         ev, a, s = max(cands)
         if a in ("entry", "add"):
             limit, tgt = buy_target(s, cfg["m_entry"] if a == "entry" else cfg["m_add"])
             r_ = frow(k_g, t_g, lat_b, s)
-            if tgt >= 1 and r_ < n: send(dict(kind="buy", t=t_g, row=r_, pool=mp_, side=s, limit=limit, target=tgt, act=a, p=ps[s]))
+            if tgt >= 1 and r_ < nf: send(dict(kind="buy", t=t_g, row=r_, pool=mp_, side=s, limit=limit, target=tgt, act=a, p=ps[s]))
         elif a == "sell":
             want = h[s] if cfg["frac"] >= 1.0 else min(h[s], max(1.0, math.floor(cfg["frac"] * h[s])))
             r_ = frow(k_g, t_g, lat_s, s)
-            if r_ < n: send(dict(kind="sell", t=t_g, row=r_, pool=mp_, side=s, shares=want, limit=max(0.05, info[s][1] - prm["slip"]), act="sell", p=ps[s]))
+            if r_ < nf: send(dict(kind="sell", t=t_g, row=r_, pool=mp_, side=s, shares=want, limit=max(0.05, info[s][1] - prm["slip"]), act="sell", p=ps[s]))
         else:
             o = OTHER[s]
             limit2, tgt2 = buy_target(o, cfg["m_flip"])
             r_ = frow(k_g, t_g, lat_s, s)
-            if r_ < n: send(dict(kind="sell", t=t_g, row=r_, pool=mp_, side=s, shares=h[s], limit=max(0.05, info[s][1] - prm["slip"]), act="flip", p=ps[s],
+            if r_ < nf: send(dict(kind="sell", t=t_g, row=r_, pool=mp_, side=s, shares=h[s], limit=max(0.05, info[s][1] - prm["slip"]), act="flip", p=ps[s],
                       limit2=limit2, target2=tgt2, p2=ps[o]))
 
     if model_dec is not None:
