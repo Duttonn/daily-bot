@@ -646,7 +646,7 @@ if (LGB_PORT) {
   lgbSock.on('message', (buf) => { let o; try { o = JSON.parse(buf); } catch { return; } lgbOrder(o); });
   lgbSock.on('error', (e) => console.error(new Date().toISOString(), '[LGB] socket', e.message));
   lgbSock.bind(LGB_PORT, '127.0.0.1');
-  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of its cash per round, buys stop below ${LGB.haltBelow} USD${lgb.halted ? ' (HALTED)' : ''}`);
+  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of the wallet per round, buys stop at the wallet floor${lgb.halted ? ' (HALTED)' : ''}`);
 }
 
 async function lgbOrder(o) {
