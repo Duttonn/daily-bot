@@ -11,7 +11,12 @@ The simulator is re-run on the rows seen so far once per decision second; it is 
 Settlement: the recorder's rs line (payoutUp, the venue's verdict); Pyth (next strike >= this strike) if no rs line 60 s after the close.
 
   live:   nice -n 10 python3 trader.py --port 47011 --out ~/lgbm-paper
-  replay: python3 trader.py --port 47012 --out DIR --replay --trade-from RS0 --trade-to RS1   (fed by replay.py; ends on its end marker)"""
+  replay: python3 trader.py --port 47012 --out DIR --replay --trade-from RS0 --trade-to RS1   (fed by replay.py; ends on its end marker)
+  leg:    nice -n 10 python3 trader.py --port 47014 --out ~/lgbm-leg --orders-port 47012 --fills-port 47013
+Leg mode (real money, executed by daily-s6-bot.mjs with LGB_PORT): every model order is sent as JSON to the bot on --orders-port as
+the simulator sends it; the bot sizes it against the leg's own ledger, sends it to the venue and answers on --fills-port with the
+venue's fill (shares, cost incl fee or proceeds net of fee, fee). From then on the simulator uses that answer instead of its book walk,
+so its holdings, its later decisions and its PnL follow the real fills. Orders more than 2 s old by the feed clock are not sent."""
 import sys, os, json, math, bisect, socket, time, hashlib, argparse, resource, statistics, collections
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import lib, m7engine                      # copies of rec-replay lib.py / m7engine.py (fee, ncdf, max_price_for_edge, Prep.ladder)
@@ -97,8 +102,13 @@ class Trader:
         self.g0 = self.t_first = None; self.glast = NAN; self.gprev = NAN; self.gk = 0; self.gs = 0.0; self.pre = [0.0]; self.pre_base = 0
         self.rounds = {}; self.pool = self.pol["pool0"]; self.cnt = collections.Counter(); self.late = 0; self.last_hb = time.time()
         self.n_settled = 0; self.last_trim = 0.0; self.ntot = 0; self.by_start = {}
-        files = ["trader.py", "policy.json", self.pol["model"], "v3b_sim.py", "v3_sim.py", "lib.py", "m7engine.py"]
+        self.leg = bool(a.orders_port); self.fills, self.sent, self.pending = {}, set(), {}
+        if self.leg:
+            self.osk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.fsk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.fsk.bind(("127.0.0.1", a.fills_port)); self.fsk.setblocking(False)
+        files =["trader.py", "policy.json", self.pol["model"], "v3b_sim.py", "v3_sim.py", "lib.py", "m7engine.py"]
         hdr = dict(ev="start", wall=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), mode="replay" if a.replay else "live", port=a.port,
+                   leg=dict(orders_port=a.orders_port, fills_port=a.fills_port) if self.leg else None,
                    sha256={f: sha(os.path.join(HERE, f)) for f in files}, feats_sha256=hashlib.sha256(" ".join(self.pol["feats"]).encode()).hexdigest(),
                    cfg=self.cfg, variant=self.pol["variant"], pool0=self.pol["pool0"], cap_frac=self.pol["cap_frac"], warmup_s=self.pol["warmup_s"],
                    trade_from=a.trade_from, trade_to=a.trade_to, python=sys.version.split()[0])
@@ -295,12 +305,45 @@ class Trader:
         log = []
         cap = R.cap if R.cap is not None else self.pol["cap_frac"] * max(self.pool, 0.0)
         res = v3b_sim.sim_round(RoundP(R.c, Rd), R.rs, self.prm, self.var, model_dec=(R.dec_t[:n_proc], R.dec_k[:n_proc], R.dec_p[:n_proc]),
-                                cfg=self.cfg, liq=True, log=log, stress=self.stress, round_cap=cap)
+                                cfg=self.cfg, liq=True, log=log, stress=self.stress, round_cap=cap,
+                                on_send=(lambda o: self.order(R, o)) if self.leg else None, fills=self.fills if self.leg else None)
         return res, log, cap
+
+    # ---------------- leg mode: orders out to the bot, the venue's fills back
+    def order(self, R, o):
+        k = v3b_sim.okey(R.rs, o)
+        if k in self.sent or k in self.fills: return
+        self.sent.add(k)
+        # not sent, and a miss for the simulator: flip (off in the policy), an order decided on an old book, or one decided before the
+        # venue answered the previous order (its holdings and its cap room were then the simulator's guess, not the venue's fill)
+        now = self.tmax / 1000.0
+        for k2 in [k2 for k2, t2 in self.pending.items() if now - t2 > 20.0]:   # the bot answers within 15 s or not at all: count it as unfilled
+            del self.pending[k2]; self.fills.setdefault(k2, (0, 0.0, 0.0)); self.emit(dict(ev="venue", k=k2, sh=0, st="no answer"))
+        why = "flip" if o["act"] == "flip" else "late" if now - o["t"] > 1.0 else "previous unanswered" if self.pending else None
+        if why:
+            self.fills[k] = (0, 0.0, 0.0); self.emit(dict(ev="order", k=k, sent=False, why=why)); return
+        self.pending[k] = now
+        d = dict(k=k, slug=R.slug, act=o["act"], side=o["side"], limit=round(o["limit"], 6), t=o["t"], p=o.get("p"))
+        if o["kind"] == "buy": d["target"] = int(o["target"])
+        else: d["shares"] = float(o["shares"])
+        self.osk.sendto(json.dumps(d).encode(), ("127.0.0.1", self.a.orders_port))
+        self.emit(dict(ev="order", sent=True, **d))
+    def drain_fills(self):
+        while self.leg:
+            try: data = self.fsk.recv(65535)
+            except (BlockingIOError, InterruptedError): return
+            try: f = json.loads(data)
+            except ValueError: continue
+            if not isinstance(f, dict) or "k" not in f: continue
+            self.fills[f["k"]] = (float(f.get("sh", 0)), float(f.get("cost", 0)), float(f.get("fe", 0))); self.pending.pop(f["k"], None)
+            self.emit(dict(ev="venue", **f))
 
     def run_sim(self, R, n_proc):
         res, log, cap = self.sim(R, n_proc)
         old = R.log
+        if self.leg:   # a venue answer rewrites the simulated fill it replaces: the log is final only at settlement
+            if log and R.cap is None: R.cap = cap; self.emit(dict(ev="round", rs=R.rs, slug=R.slug, cap=cap, pool=self.pool))
+            R.log = log; return
         if log[:len(old)] != old: self.emit(dict(ev="error", rs=R.rs, msg="simulator prefix changed", n_old=len(old), n_new=len(log)))
         if log and R.cap is None:
             R.cap = cap; self.emit(dict(ev="round", rs=R.rs, slug=R.slug, cap=cap, pool=self.pool))
@@ -326,7 +369,9 @@ class Trader:
             if not R.log:   # no order in this round
                 self.n_settled += 1; continue
             res, log, cap = self.sim(R, len(R.dec_t), up=up)
-            if log != R.log: self.emit(dict(ev="error", rs=rs, msg="final run differs from the incremental runs"))
+            if self.leg:
+                for e in log: self.emit(dict(ev="fill" if e["sh"] else "miss", rs=R.rs, t=e["t"], tau=e["tau"], act=e["act"], side=e["side"], p=e["p"], sh=e["sh"], px=e["px"]))
+            elif log != R.log: self.emit(dict(ev="error", rs=rs, msg="final run differs from the incremental runs"))
             self.pool += res["pnl"]; self.n_settled += 1
             self.emit(dict(ev="settle", rs=rs, slug=R.slug, up=up, src=src, pyth_up=py, pnl=res["pnl"], spent=res["mspent"], cap=R.cap,
                            acts={k: v for k, v in res["acts"].items() if v}, pool_settled=self.pool, pool_cash=self.pool_cash()))
@@ -359,7 +404,9 @@ def main():
     ap.add_argument("--port", type=int, default=47011); ap.add_argument("--out", default=os.path.expanduser("~/lgbm-paper"))
     ap.add_argument("--replay", action="store_true"); ap.add_argument("--trade-from", type=int); ap.add_argument("--trade-to", type=int)
     ap.add_argument("--dump-features", action="store_true")
+    ap.add_argument("--orders-port", type=int, default=0); ap.add_argument("--fills-port", type=int, default=0)
     a = ap.parse_args()
+    if bool(a.orders_port) != bool(a.fills_port): sys.exit("leg mode needs both --orders-port and --fills-port")
     tr = Trader(a)
     sk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try: sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
@@ -367,6 +414,7 @@ def main():
     sk.bind(("127.0.0.1", a.port)); sk.settimeout(5.0)
     n = 0
     while True:
+        tr.drain_fills()
         try: data = sk.recv(65535)
         except socket.timeout:
             if time.time() - tr.last_hb >= 60: tr.heartbeat()

@@ -21,11 +21,18 @@ CAP = 400.0
 GAP = 1.5
 OTHER = {"up": "down", "down": "up"}
 
-def sim_round(P, rs, prm, variant, model_dec=None, bot_dec=None, cfg=None, liq=True, bot_vps=None, log=None, up_override=None, stress=None, round_cap=None):
+def okey(rs, o):
+    """the key of one model order, the same in every re-run of a round: round, send time, action, side"""
+    return "%d|%.3f|%s|%s" % (rs, o["t"], o["act"], o["side"])
+
+def sim_round(P, rs, prm, variant, model_dec=None, bot_dec=None, cfg=None, liq=True, bot_vps=None, log=None, up_override=None, stress=None, round_cap=None,
+              on_send=None, fills=None):
     """variant: dict(model_pool='model'|'all'|None, bot_pool='bot'|'all'|None, stop_pools=set of pools).
     model_dec = (t_g list, k_g list, p_up list); bot_dec = (k, side, q, ask0) of the engine's live trade or None.
     cfg: m_entry, m_add, m_sell, m_flip, size, frac. bot_vps: the bot's realised value per share in this round under its own
-    management (for the 'model sold bot shares' attribution)."""
+    management (for the 'model sold bot shares' attribution).
+    Live leg only (both None otherwise, which changes nothing): on_send(order) sees every model order as it is sent; fills maps
+    okey -> (shares, cost incl fee | proceeds net of fee, fee) of the venue's answer, used instead of the book walk for that order."""
     c = P.c
     R = P.rounds[rs]
     tt, pp, sg, rows = R["t"], R["p"], R["sig"], R["rows"]
@@ -87,14 +94,17 @@ def sim_round(P, rs, prm, variant, model_dec=None, bot_dec=None, cfg=None, liq=T
 
     def send(o):
         pend.append(o); acc["orders"] += 1; acc["last"] = o["t"]
+        if on_send is not None and o["act"] in ("entry", "add", "sell", "flip"): on_send(o)
 
     def apply(m):
         todo = [o for o in pend if o["row"] == m]
         for o in todo:
             pend.remove(o)
             i = rows[m]
+            ov = fills.get(okey(rs, o)) if fills is not None and o["act"] in ("entry", "add", "sell") else None
             if o["kind"] == "buy":
-                sh, cost, fe, tk = _buy_walk(imp_lad(i, o["side"], "ask", L.ladder(i, o["side"], "ask")), o["limit"], o["target"])
+                if ov is not None: sh, cost, fe, tk = ov[0], ov[1], ov[2], []
+                else: sh, cost, fe, tk = _buy_walk(imp_lad(i, o["side"], "ask", L.ladder(i, o["side"], "ask")), o["limit"], o["target"])
                 if sh >= 1:
                     imp_note(i, o["side"], "ask", tk)
                     L.take(i, o["side"], "ask", tk); bought(o["pool"], o["side"], m, sh, cost, fe, o["act"] == "bot_entry"); acts[o["act"]] += 1
@@ -104,7 +114,8 @@ def sim_round(P, rs, prm, variant, model_dec=None, bot_dec=None, cfg=None, liq=T
             else:
                 pl, side = o["pool"], o["side"]
                 want = min(o["shares"], H[pl][side])
-                s_, proc, fe, tk = _sell_walk(imp_lad(i, side, "bid", L.ladder(i, side, "bid")), o["limit"], want)
+                if ov is not None: s_, proc, fe, tk = min(ov[0], want), ov[1], ov[2], []
+                else: s_, proc, fe, tk = _sell_walk(imp_lad(i, side, "bid", L.ladder(i, side, "bid")), o["limit"], want)
                 imp_note(i, side, "bid", tk)
                 L.take(i, side, "bid", tk)
                 sold(pl, side, s_, proc, fe, o["act"] != "stop")
