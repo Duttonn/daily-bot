@@ -979,6 +979,7 @@ function trackOrderResult(msg) {
   if (msg.type === 'daily_markets_trade_executed') {
     const accepted = Number(msg.execution?.acceptedSize) / 1_000_000;
     if (!(accepted > 0)) return;
+    pos.lastFillAt = Date.now();
     if (isSell) pos.pendingSell.acceptedShares = accepted;
     else { pos.sharesBought = accepted; pos.buyAccepted = true; }
   } else if (!isSell) {
@@ -1007,6 +1008,9 @@ function syncVenuePositions(list) {
     botSides.add(tokenId);
     const v = list.find((x) => x.market?.marketPda === pos.market?.marketPda && x.outcomeIndex === pos.targetOutcome);
     if (!v) continue;
+    // a list written before our last fill on this side is stale: 6 Nov 10:02:36, our buy was processed at .320 and the list at .581
+    // still showed only the leg's 10:00:09 fill, so the bot dropped its own 28 shares
+    if (pos.lastFillAt && Date.parse(v.lastTradeAt) < pos.lastFillAt - 2000) continue;
     if (lgbBusy(tokenId)) continue; // a leg order on this side may not show in the venue's quantity yet
     const qty = Number(v.quantity) / 1_000_000 - (lgb?.pos[tokenId]?.shares || 0); // the venue's quantity holds both strategies' shares
     if (!Number.isFinite(qty)) continue;
@@ -1024,12 +1028,13 @@ function syncVenuePositions(list) {
     }
   }
   if (changed) saveBotState();
-  // A side only the leg holds: the venue is the truth on its size (shares only; a fill whose answer was lost leaves its cost unbooked)
+  // A side only the leg holds: the venue lowers the leg's size (a sale whose answer was lost), never raises it: more shares than the
+  // leg's own fills are someone else's (6 Nov 10:02:36, the bot's 28 shares were booked to the leg and paid to it at settlement)
   for (const [tokenId, p] of Object.entries(lgb?.pos || {})) {
     if (botSides.has(tokenId) || p.endMs - Date.now() < 15000 || lgbBusy(tokenId)) continue;
     const v = list.find((x) => x.market?.marketPda === p.marketPda && x.outcomeIndex === p.outcome);
     const qty = v ? Number(v.quantity) / 1_000_000 : NaN;
-    if (!Number.isFinite(qty) || Math.abs(qty - p.shares) < 1e-6) continue;
+    if (!Number.isFinite(qty) || qty > p.shares - 1e-6) continue;
     console.warn(new Date().toISOString(), `[LGB SYNC] ${p.slug} leg shares ${p.shares} -> ${qty}`);
     if (qty < 1e-6) delete lgb.pos[tokenId]; else p.shares = qty;
     lgbTouch(tokenId); saveLgb();

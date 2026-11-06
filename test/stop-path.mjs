@@ -91,6 +91,8 @@ class WebSocket extends EventEmitter {
     if (m.type === 'auth') this.reply({ type: 'authed', wallet: 'x' });
     if (m.type === 'updown_subscribe') {
       if (scenario === 'lgb_shared') this.reply({ type: 'updown_update', nativePositions: [{ market: { marketPda: PDA }, outcomeIndex: 1, quantity: '11000000' }] }, 200);
+      if (scenario === 'lgb_stale') // bot 6 + leg 8 up shares, and a venue list written before the bot's fill that shows only the leg's 8
+        this.reply({ type: 'updown_update', nativePositions: [{ market: { marketPda: PDA }, outcomeIndex: 0, quantity: '8000000', lastTradeAt: new Date(Date.now() - 140000).toISOString() }] }, 200);
       this.reply({ type: 'updown_markets', markets: [{ slug, symbol: 'BTC', marketPda: PDA, marketId: 'MID1', feeRateBps: 700, roundId: 'updown:BTC:' + startSec + ':' + endSec,
         outcomes: [{ tokenId: PDA + ':0', book: { bids: level(0.5), asks: level(0.52), stale: false } }, { tokenId: PDA + ':1', book: { bids: level(0.46), asks: level(0.48), stale: false } }] }] });
       setInterval(() => { this.emit('message', JSON.stringify(book(PDA + ':0'))); this.emit('message', JSON.stringify(book(PDA + ':1'))); }, 500);
@@ -109,6 +111,12 @@ class WebSocket extends EventEmitter {
     if (m.intent.side === 'buy') {
       buys++;
       if (scenario === 'buy_rejected' || scenario === 'lgb_reject') return this.reject(m);
+      if (scenario === 'lgb_collide') { // the leg holds 8 up shares; after the bot's buy, a venue list from before it, then the right one
+        this.accept(m, m.intent.maxShares);
+        const pos = (qty, at) => ({ type: 'updown_update', nativePositions: [{ market: { marketPda: PDA }, outcomeIndex: m.intent.outcomeIndex, quantity: qty, lastTradeAt: at }] });
+        this.reply(pos('8000000', new Date(Date.now() - 140000).toISOString()), 600);
+        return this.reply(pos(String(8000000n + BigInt(m.intent.maxShares)), new Date(Date.now() + 400).toISOString()), 650);
+      }
       if (scenario === 'buy_silent') return; // the venue never answers this buy
       return this.accept(m, m.intent.maxShares);
     }
@@ -229,12 +237,18 @@ const sharedEnd = Date.now() + 90000; // a bot position of 6 down shares and a l
 const sharedBot = { tradedRounds: [], peakBalance: 400, activePositions: [['btc-updown-5m-seed', { targetOutcome: 1, targetSideName: 'down', sharesBought: 6, f0: 80000,
   entryPrice: 0.48, entryTau: 200, cashoutAttempted: false, marketPda: FAKE_PDA, marketEndMs: sharedEnd, marketFeeRateBps: 700, buyAccepted: true, buyProcessed: true }]] };
 const sharedLeg = seedLeg(95, { [FAKE_PDA + ':1']: { slug: 'btc-updown-5m-seed', marketId: 'MID1', marketPda: FAKE_PDA, outcome: 1, endMs: sharedEnd, shares: 5 } });
-const [legBuy, legSettle, legShared, legHalt, legReject] = await Promise.all([
+const collideLeg = seedLeg(95, { [FAKE_PDA + ':0']: { slug: 'btc-updown-5m-seed', marketId: 'MID1', marketPda: FAKE_PDA, outcome: 0, endMs: sharedEnd, shares: 8 } });
+const staleBot = { tradedRounds: [], peakBalance: 400, activePositions: [['btc-updown-5m-seed', { targetOutcome: 0, targetSideName: 'up', sharesBought: 6, f0: 79000,
+  entryPrice: 0.48, entryTau: 200, cashoutAttempted: false, marketPda: FAKE_PDA, marketEndMs: sharedEnd, marketFeeRateBps: 700, buyAccepted: true, buyProcessed: true, lastFillAt: Date.now() }]] };
+const [legBuy, legSettle, legShared, legHalt, legReject, legCollide, legOrphan, legStale] = await Promise.all([
   runScenario(rawBot, 'lgb_buy', 12500, peak400, {}, {}, { port: 47301, replyPort: 47302, intents: legOrders }),
   runScenario(rawBot, 'lgb_settle', 24000, peak400, {}, {}, { port: 47303, replyPort: 47304, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_shared', 6000, sharedBot, {}, { 'lgb-state.json': sharedLeg }, { port: 47305, replyPort: 47306, intents: [] }),
   runScenario(rawBot, 'lgb_halt', 5000, peak400, {}, { 'lgb-state.json': seedLeg(49) }, { port: 47307, replyPort: 47308, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_reject', 6000, peak400, {}, {}, { port: 47309, replyPort: 47310, intents: [legOrders[0]] }),
+  runScenario(bot, 'lgb_collide', 13000, peak400, {}, { 'lgb-state.json': collideLeg }, { port: 47311, replyPort: 47312, intents: [] }),
+  runScenario(rawBot, 'lgb_shared', 6000, peak400, {}, { 'lgb-state.json': sharedLeg }, { port: 47313, replyPort: 47314, intents: [] }),
+  runScenario(rawBot, 'lgb_stale', 6000, staleBot, {}, { 'lgb-state.json': collideLeg }, { port: 47315, replyPort: 47316, intents: [] }),
 ]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
@@ -324,5 +338,11 @@ check(`leg shared side: the venue shows 11, the bot's stop sells its own ${Numbe
 check('leg shared side: the leg keeps its 5 shares', legShared.lgbState?.pos?.[FAKE_PDA + ':1']?.shares === 5 && legShared.out.includes('[CASHOUT FILLED]'));
 check('leg halt: below 50 USD the leg buys nothing and stays halted', rep(legHalt, 'k1').why === 'halted' && legHalt.lgbState?.halted === true && legHalt.frames.length === 0);
 check('leg reject: a venue rejection is answered and books nothing', rep(legReject, 'k1').st === 'rejected' && near(legReject.lgbState?.cash, 100) && legPos(legReject) === 0);
+s = sells(legCollide);
+check('leg stale list: a venue list older than the bot\'s last fill does not close its 6 shares', !legStale.out.includes('venue holds 0 shares')
+  && legStale.state?.activePositions?.[0]?.[1]?.sharesBought === 6 && legStale.lgbState?.pos?.[FAKE_PDA + ':0']?.shares === 8);
+check(`leg collide: the bot's stop sells its own ${Number(s[0]?.maxShares) / 1e6} shares and the leg keeps its 8`, s[0]?.maxShares === '6000000' && legCollide.out.includes('[CASHOUT FILLED]')
+  && legCollide.lgbState?.pos?.[FAKE_PDA + ':0']?.shares === 8 && !legCollide.out.includes('[LGB SYNC]'));
+check('leg orphan: venue shares beyond the leg\'s own fills are not booked to the leg (5 stays 5, the venue shows 11)', legOrphan.lgbState?.pos?.[FAKE_PDA + ':1']?.shares === 5 && !legOrphan.out.includes('[LGB SYNC]'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
