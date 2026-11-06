@@ -121,6 +121,8 @@ const CONFIG = {
   // R1: best train t-stat of a 324-point grid, chronological 60/40 split
   windowRemainingMin: 50,  // Entry window: from the round open (300 s) down to 50 s remaining
   windowRemainingMax: 300,
+  earlyEntryMaxSigma: 3.0, // entries in the round's first 80 s only in a calm market (sigmaM below this)
+  lateEntryTau: 220,       // otherwise enter from 220 s remaining
   minZScore: 0.40,         // Minimum statistical conviction Z >= 0.40
   calmVolThreshold: 12.0,  // Allow trading unless extreme volatility (>= 12 $/sqrt(s) over 10 min)
   minSigmaFloor: 2.20,     // Volatility floor to prevent underestimating variance on 5m BTC
@@ -200,6 +202,7 @@ console.log('  Session Auth:   ', AUTHORITY.toBase58());
 console.log('  Vault PDA:      ', VAULT.toBase58());
 console.log('  Session PDA:    ', SESSION.toBase58());
 console.log('  Timing Window:  ', `[${CONFIG.windowRemainingMin}s, ${CONFIG.windowRemainingMax}s] continuous sniper`);
+console.log('  Early Entries:  ', `before ${CONFIG.lateEntryTau}s remaining only if sigmaM < ${CONFIG.earlyEntryMaxSigma}`);
 console.log('  Z-Score Filter: ', `Z >= ${CONFIG.minZScore}`);
 console.log('  Edge Margin:    ', `edge >= +${(CONFIG.minEdgeMargin * 100).toFixed(1)}% net`);
 console.log('  Max Entry Ask:  ', `<=${CONFIG.maxEntryAsk}$`);
@@ -1110,6 +1113,7 @@ function evaluateStrategy() {
     if (remainingSeconds < CONFIG.windowRemainingMin || remainingSeconds > CONFIG.windowRemainingMax) {
       continue;
     }
+    if (sigmaM >= CONFIG.earlyEntryMaxSigma && remainingSeconds > CONFIG.lateEntryTau) continue; // agitated market: early entries lost (5 Nov VPS day)
 
     const f0 = getPriceAt(priceHistory, m.startMs);
     if (!f0) continue;
