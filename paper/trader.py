@@ -12,7 +12,8 @@ Settlement: the recorder's rs line (payoutUp, the venue's verdict); Pyth (next s
 
   live:   nice -n 10 python3 trader.py --port 47011 --out ~/lgbm-paper
   replay: python3 trader.py --port 47012 --out DIR --replay --trade-from RS0 --trade-to RS1   (fed by replay.py; ends on its end marker)
-  leg:    nice -n 10 python3 trader.py --port 47014 --out ~/lgbm-leg --orders-port 47012 --fills-port 47013
+  leg:    nice -n 10 python3 trader.py --port 47014 --out ~/lgbm-leg --orders-port 47012 --fills-port 47013 --preload ~/venue-rec/data/daily
+  --preload DIR rebuilds the last hour from the recorder's day files at start, so trading starts with the next round, not after 1 h.
 Leg mode (real money, executed by daily-s6-bot.mjs with LGB_PORT): every model order is sent as JSON to the bot on --orders-port as
 the simulator sends it; the bot sizes it against the leg's own ledger, sends it to the venue and answers on --fills-port with the
 venue's fill (shares, cost incl fee or proceeds net of fee, fee). From then on the simulator uses that answer instead of its book walk,
@@ -23,6 +24,7 @@ import lib, m7engine                      # copies of rec-replay lib.py / m7engi
 def _no(*a, **k): raise RuntimeError("fill_mode real is not used by the paper trader")
 m7engine._real_row = _no; m7engine._rtt = _no   # names v3b_sim imports from the backtest engine; only called in fill_mode real
 import v3b_sim                            # copy of entry-ml v3b_sim.py (+ v3_sim.py), unchanged
+import replay                             # read_lines: the recorder's gzip, still being written
 from lib import ncdf
 NAN = float("nan"); ND = statistics.NormalDist()
 KEEP = {"bf", "mk", "ptb", "bk", "rs"}
@@ -101,7 +103,7 @@ class Trader:
         self.tk_t, self.tk_bf = [], []
         self.g0 = self.t_first = None; self.glast = NAN; self.gprev = NAN; self.gk = 0; self.gs = 0.0; self.pre = [0.0]; self.pre_base = 0
         self.rounds = {}; self.pool = self.pol["pool0"]; self.cnt = collections.Counter(); self.late = 0; self.last_hb = time.time()
-        self.n_settled = 0; self.last_trim = 0.0; self.ntot = 0; self.by_start = {}
+        self.n_settled = 0; self.last_trim = 0.0; self.ntot = 0; self.by_start = {}; self.preloading = False; self.pre_until = 0
         self.leg = bool(a.orders_port); self.fills, self.sent, self.pending = {}, set(), {}
         if self.leg:
             self.osk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -130,6 +132,7 @@ class Trader:
         if c < 0: return
         try: t = int(ln[:c])
         except ValueError: return
+        if t <= self.pre_until: return   # already read from the recorder's file by preload()
         src = ln[c + 1: c + 1 + ln[c + 1:].find(",")]
         self.cnt[src] += 1; self.ntot += 1
         if src not in KEEP:
@@ -215,7 +218,29 @@ class Trader:
             if t >= rs + 300: R.complete = True
         if t - self.last_trim > 600: self.trim(t)
 
+    def preload(self, d, now=None):
+        """Replays the last warmup_s + 900 s of the recorder's day files (daily-YYYY-MM-DD.csv.gz in d, the lines its UDP copy carries)
+        through line(), so that a restart needs no warmup. A round seen here is never eligible: no decision, no simulation, no order.
+        ponytail: the recorder's gzip lags about 10 s behind its UDP copy, and the socket only queues from its bind, so those seconds
+        are missing; the 0.5 s grid carries the last price over them as over any feed gap."""
+        now = time.time() if now is None else now
+        t0, t1 = int((now - self.pol["warmup_s"] - 900) * 1000), int(now * 1000)   # +900 s: a market is only known from its mk line
+        files = list(dict.fromkeys(os.path.join(d, time.strftime("daily-%Y-%m-%d.csv.gz", time.gmtime(x))) for x in (t0 / 1000, now)))
+        self.preloading, n = True, 0
+        for f in files:
+            if not os.path.exists(f): continue
+            for b in replay.read_lines(f):
+                ln = b.decode("utf-8", "replace"); c = ln.find(",")
+                try: t = int(ln[:c])
+                except ValueError: continue
+                if t0 <= t <= t1: self.line(ln); n += 1
+        self.preloading, self.pre_until = False, self.tmax or 0
+        self.emit(dict(ev="preload", files=[os.path.basename(f) for f in files if os.path.exists(f)], lines=n, first_tick=self.t_first,
+                       until=self.pre_until / 1000.0, warm_from=(self.t_first + self.pol["warmup_s"]) if self.t_first else None,
+                       gap_s=round(now - self.pre_until / 1000.0, 1) if self.pre_until else None))
+
     def is_eligible(self, R):
+        if self.preloading: return False
         if R.first_t != R.rs or math.isnan(R.f0): return False
         if R.rs < self.t_first + self.pol["warmup_s"]: return False
         if self.a.trade_from is not None and R.rs < self.a.trade_from: return False
@@ -405,6 +430,7 @@ def main():
     ap.add_argument("--replay", action="store_true"); ap.add_argument("--trade-from", type=int); ap.add_argument("--trade-to", type=int)
     ap.add_argument("--dump-features", action="store_true")
     ap.add_argument("--orders-port", type=int, default=0); ap.add_argument("--fills-port", type=int, default=0)
+    ap.add_argument("--preload", help="recorder data dir: start from its last hour instead of a warmup")
     a = ap.parse_args()
     if bool(a.orders_port) != bool(a.fills_port): sys.exit("leg mode needs both --orders-port and --fills-port")
     tr = Trader(a)
@@ -412,6 +438,7 @@ def main():
     try: sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 << 20)
     except OSError: pass
     sk.bind(("127.0.0.1", a.port)); sk.settimeout(5.0)
+    if a.preload: tr.preload(a.preload)   # after the bind, so the live lines queue meanwhile
     n = 0
     while True:
         tr.drain_fills()
