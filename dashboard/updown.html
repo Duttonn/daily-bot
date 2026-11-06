@@ -3,796 +3,432 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Daily.fun S6 - Up/Down Bot</title>
+<title>Daily.fun - comptes</title>
 <style>
-:root {
-  --bg: #f6f7f9;
-  --card: #fff;
-  --ink: #1c2230;
-  --muted: #667085;
-  --line: #e3e6eb;
-  --good: #0f8a4a;
-  --bad: #c62828;
-  --warn: #b26a00;
-  --accent: #2458d6;
-  --soft: #eef2fb;
-  --bar-hover: #1d4ed8;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1218;
-    --card: #171b23;
-    --ink: #e7eaf0;
-    --muted: #98a2b3;
-    --line: #2a303b;
-    --good: #3ccf7f;
-    --bad: #ff6b6b;
-    --warn: #f0b24a;
-    --accent: #7aa2ff;
-    --soft: #1d2433;
-    --bar-hover: #93b5ff;
-  }
-}
+:root { --bg: #f6f7f9; --card: #fff; --ink: #1c2230; --muted: #667085; --line: #e3e6eb; --good: #0f8a4a; --bad: #c62828; --warn: #b26a00; --accent: #2458d6; --soft: #eef2fb;
+  --b0: #9aa4b2; --b1: #7cc4f8; --b2: #3b9be8; --b3: #2458d6; --b4: #7a3fd6; --b5: #c026a8; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0f1218; --card: #171b23; --ink: #e7eaf0; --muted: #98a2b3; --line: #2a303b; --good: #3ccf7f; --bad: #ff6b6b; --warn: #f0b24a; --accent: #7aa2ff; --soft: #1d2433; } }
 * { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-}
-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--card);
-  border-bottom: 1px solid var(--line);
-  padding: 10px 16px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px 20px;
-  align-items: center;
-}
-h1 { font-size: 16px; margin: 0 4px 0 0; display: flex; align-items: center; gap: 8px; }
-h2 { font-size: 15px; margin: 0 0 10px; }
-main {
-  max-width: 1240px;
-  margin: 0 auto;
-  padding: 16px;
-  display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-}
-section {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 14px;
-  min-width: 0;
-}
-section.wide { grid-column: 1 / -1; }
-.badge {
-  padding: 3px 9px;
-  border-radius: 99px;
-  font-weight: 600;
-  font-size: 12px;
-  background: var(--soft);
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-.badge.running {
-  background: color-mix(in srgb, var(--good) 18%, transparent);
-  color: var(--good);
-}
-.badge.warmup {
-  background: color-mix(in srgb, var(--warn) 20%, transparent);
-  color: var(--warn);
-}
-.badge.offline {
-  background: color-mix(in srgb, var(--bad) 18%, transparent);
-  color: var(--bad);
-}
-.badge-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-variant-numeric: tabular-nums; }
+header { position: sticky; top: 0; z-index: 2; background: var(--card); border-bottom: 1px solid var(--line); padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 15px; margin: 0; }
+/* Panels flow in centred rows (05/10 user: side by side once narrow enough); #bots only groups them in the markup */
+main { margin: 0 auto; padding: 16px; display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 14px; }
+#bots { display: contents; }
+/* --w / --h: a panel's width and height, set by dragging its corner (.grip); with a height, the main chart fills it */
+section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; width: min(var(--w, 1068px), 100%); position: relative;
+  display: flex; flex-direction: column; }
+section.fixh { height: var(--h); overflow: hidden; }
+section.fixh .chart { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(30px, 1fr) auto auto; }
+section.fixh svg.curve { height: 100%; }
+section.dragging { opacity: .55; outline: 2px dashed var(--accent); }
+.mv { cursor: grab; color: var(--muted); user-select: none; touch-action: none; padding: 0 4px; font-style: normal; }
+.mv:hover { color: var(--ink); }
+#snap { position: fixed; z-index: 5; pointer-events: none; background: var(--ink); color: var(--card); font-size: 12px; padding: 2px 7px; border-radius: 6px; display: none; }
+.grip { position: absolute; right: 2px; bottom: 2px; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; opacity: .55;
+  background: linear-gradient(135deg, transparent 55%, var(--muted) 55%, var(--muted) 63%, transparent 63%, transparent 78%, var(--muted) 78%, var(--muted) 86%, transparent 86%); }
+.grip:hover { opacity: 1; }
+.row { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; }
+.grow { flex: 1; }
 .kpi { display: flex; flex-direction: column; }
-.kpi b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.kpi b { font-size: 15px; }
 .kpi span { color: var(--muted); font-size: 12px; }
-.pos { color: var(--good); }
-.neg { color: var(--bad); }
-.muted { color: var(--muted); }
-.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-button {
-  font: inherit;
-  padding: 5px 11px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--card);
-  color: var(--ink);
-  cursor: pointer;
-}
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-button:disabled { opacity: .45; cursor: default; }
-.scroll { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 13px; }
-th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-th:first-child, td:first-child, td.l, th.l { text-align: left; }
-td.wrap { white-space: normal; }
-tr.selected-row { background: var(--soft); }
-svg { width: 100%; height: auto; display: block; }
-.axis { stroke: var(--line); }
-.grid text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-code { font-size: 12px; background: var(--soft); padding: 1px 4px; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.two { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
-.pill {
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-weight: 700;
-  font-size: 11px;
-  display: inline-block;
-}
-.pill-up { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); }
-.pill-down { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
-
-/* Timeline bar Euphoria style */
-.timeline-wrap {
-  margin: 10px 0 6px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 14px;
-}
-.timeline-track {
-  position: relative;
-  height: 22px;
-  background: color-mix(in srgb, var(--line) 40%, transparent);
-  border-radius: 6px;
-  overflow: hidden;
-  margin-bottom: 6px;
-}
-.t-zone-obs {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 59.33%; /* 178s / 300s */
-  background: color-mix(in srgb, var(--muted) 15%, transparent);
-}
-.t-zone-win {
-  position: absolute;
-  left: 59.33%;
-  width: 1.34%; /* 4s / 300s */
-  top: 0;
-  bottom: 0;
-  background: var(--accent);
-  box-shadow: 0 0 6px var(--accent);
-}
-.t-zone-hold {
-  position: absolute;
-  left: 60.67%;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  background: color-mix(in srgb, var(--good) 15%, transparent);
-}
-.t-pin {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: #fff;
-  box-shadow: 0 0 6px #000;
-  z-index: 5;
-  transition: left 0.3s ease;
-}
-.timeline-labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Chips for quick trade pick */
-.chips-row {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 6px;
-  margin-bottom: 10px;
-}
-.chip {
-  padding: 4px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-  cursor: pointer;
-  font-size: 12px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.chip.active {
-  border-color: var(--accent);
-  background: var(--soft);
-  font-weight: 600;
-}
-.chip.won { border-left: 3px solid var(--good); }
-.chip.lost { border-left: 3px solid var(--bad); }
-
-@media (max-width: 600px) {
-  main { padding: 10px; }
-  header { padding: 8px 10px; gap: 8px 12px; }
-  .kpi b { font-size: 14px; }
-}
+.pos { color: var(--good); } .neg { color: var(--bad); } .muted { color: var(--muted); }
+small { color: var(--muted); }
+.badge { padding: 2px 9px; border-radius: 99px; font-weight: 600; font-size: 12px; background: var(--soft); white-space: nowrap; }
+.badge.running, .badge.ok { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.badge.paused, .badge.warming-up { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.badge.stopped, .badge.restricted, .badge.blocked { background: var(--bad); color: #fff; }
+button { font: inherit; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#alerts { max-width: 1100px; margin: 12px auto 0; padding: 0 16px; display: grid; gap: 6px; }
+.alert { border-radius: 8px; padding: 8px 12px; font-weight: 600; }
+.alert.bad { background: var(--bad); color: #fff; }
+.alert.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+.chart { display: grid; grid-template-columns: 58px 1fr; gap: 3px 8px; align-items: center; margin-top: 10px; }
+.chart > span { color: var(--muted); font-size: 11px; text-align: right; }
+svg { width: 100%; display: block; touch-action: pan-y; }
+svg.curve { height: 64px; } svg.strip { height: 14px; border-radius: 3px; background: var(--soft); }
+svg * { vector-effect: non-scaling-stroke; }
+.zero { stroke: var(--line); } .cur { stroke: var(--ink); stroke-width: 1; opacity: .7; }
+/* The period picked by click + drag on a chart: a band on every chart, its numbers in .per */
+svg.plot { cursor: crosshair; user-select: none; -webkit-user-select: none; }
+.sel { fill: var(--accent); opacity: .16; pointer-events: none; }
+.per { margin-top: 6px; font-size: 13px; } .per:empty { display: none; }
+.mk { stroke: var(--warn); stroke-width: 2; } .mk.jump { stroke: var(--accent); }
+.axis { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.read { margin-top: 6px; font-size: 13px; min-height: 20px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); align-items: center; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.fill { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.fill svg { width: 210px; height: 12px; border-radius: 3px; background: var(--soft); }
+.fill .bal { stroke: var(--ink); stroke-width: 2; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; } th.l, td.l { text-align: left; }
+.scroll { overflow: auto; max-height: 560px; margin-top: 8px; } .scroll th { position: sticky; top: 0; background: var(--card); }
+.pill { padding: 1px 6px; border-radius: 4px; font-weight: 700; font-size: 11px; }
+.pill-up { background: color-mix(in srgb, var(--good) 20%, transparent); color: var(--good); } .pill-down { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+code { font-size: 12px; }
+@media (max-width: 520px) { main { padding: 10px; } .chart { grid-template-columns: 44px 1fr; } }
 </style>
 </head>
 <body>
-
 <header>
-  <h1>
-    <span>Daily.fun S6</span>
-  </h1>
-  <span id="bot-badge" class="badge running">
-    <span class="badge-dot"></span>
-    <span id="bot-state-txt">en marche (F20)</span>
-  </span>
-
-  <div class="kpi">
-    <b id="hdr-bal">- $</b>
-    <span>solde USDC (plancher 25 $)</span>
-  </div>
-
-  <div class="kpi">
-    <b id="hdr-pnl">- $</b>
-    <span>P&L net (<span id="hdr-roi">-</span>)</span>
-  </div>
-
-  <div class="kpi">
-    <b id="hdr-wr">- %</b>
-    <span>win rate (<span id="hdr-score">-</span>)</span>
-  </div>
-
-  <div class="kpi">
-    <b id="hdr-timing">120.0s</b>
-    <span>timing cible (F20 : 2 min fin)</span>
-  </div>
-
-  <div class="kpi">
-    <b id="hdr-last">-</b>
-    <span>dernier trade</span>
-  </div>
-
-  <div class="row" style="margin-left:auto;">
-    <span id="sync-pill" class="badge muted" style="font-size:11px;">Auto : sync...</span>
-  </div>
+  <h1>Daily.fun - comptes</h1>
+  <div class="kpi"><b id="tbal">-</b><span>solde total</span></div>
+  <div class="kpi"><b id="t1">-</b><span id="t1l">P&L 1 h</span></div>
+  <div class="kpi"><b id="t6">-</b><span id="t6l">P&L 6 h</span></div>
+  <div class="kpi"><b id="tall">-</b><span id="talll">P&L fenêtre</span></div>
+  <div class="row" id="fills"></div>
+  <span class="grow"></span>
+  <small id="zm" title="pincer sur un graphique pour zoomer, glisser à deux doigts pour se déplacer"></small>
+  <span class="row" id="wins"></span>
+  <button id="notif" hidden>Notifications</button>
+  <small id="age">...</small>
 </header>
-
+<div id="alerts"></div>
+<div id="snap"></div>
 <main>
-
-  <!-- Section 1 : Performance Globale & Courbe de Solde (Look Euphoria) -->
-  <section class="wide">
-    <div class="row" style="justify-content:space-between; margin-bottom:8px;">
-      <h2>Évolution du Solde & P&L Cumulé</h2>
-      <div class="row">
-        <span class="muted" style="font-size:12px;">Capital initial : <b>51.62 $</b></span>
-        <span class="muted" style="font-size:12px;">·</span>
-        <span class="muted" style="font-size:12px;">Sizing : <b>12%</b> par trade</span>
-        <span class="muted" style="font-size:12px;">·</span>
-        <span class="muted" style="font-size:12px;">Frais taker : <b>700 bps</b></span>
-      </div>
-    </div>
-
-    <!-- Summary KPI line Euphoria style -->
-    <div id="summary-kpis" class="row" style="gap:24px; margin-bottom:14px; padding:10px 14px; background:var(--bg); border:1px solid var(--line); border-radius:8px;">
-      <div class="kpi"><b id="kpi-pnl" class="pos">- $</b><span>P&L net total</span></div>
-      <div class="kpi"><b id="kpi-wr" class="pos">- %</b><span>taux de réussite</span></div>
-      <div class="kpi"><b id="kpi-staked">- $</b><span>total misé</span></div>
-      <div class="kpi"><b id="kpi-payout">- $</b><span>total payouts perçus</span></div>
-      <div class="kpi"><b id="kpi-fees">- $</b><span>frais plateforme payés</span></div>
-      <div class="kpi"><b id="kpi-zscore" class="pos">- σ</b><span>Z-score vs prix payés</span></div>
-      <div class="kpi"><b id="kpi-progress">- / 300</b><span>protocole 300 trades</span></div>
-    </div>
-
-    <!-- SVG Cumulative Curve Euphoria style -->
-    <div id="chart-curve"></div>
-    <div id="chart-bars" style="margin-top:14px;"></div>
+  <div id="bots"></div>
+  <div class="legend" style="width:100%;max-width:1068px;margin:8px auto 0;justify-content:center">
+    <span>mise par trade :</span>
+    <span><i class="sw" style="background:var(--b0)"></i>2 $</span><span><i class="sw" style="background:var(--b1)"></i>jusqu'à 5</span><span><i class="sw" style="background:var(--b2)"></i>10</span><span><i class="sw" style="background:var(--b3)"></i>20</span><span><i class="sw" style="background:var(--b4)"></i>40</span><span><i class="sw" style="background:var(--b5)"></i>plus</span>
+    <span><i class="sw" style="background:var(--warn)"></i>redémarrage</span>
+  </div>
+  <section id="positions" style="order:999">
+    <div class="row"><h2>Positions</h2><small id="pscope"></small><span class="grow"></span><span class="row" id="pfilt"></span></div>
+    <div class="scroll"><table>
+      <thead><tr><th class="l">#</th><th class="l">heure</th><th class="l">stratégie</th><th class="l">round</th><th class="l">sens</th><th>restant</th><th>σ</th><th>prix moyen</th><th>parts</th><th>coût</th><th class="l">sortie</th><th>prix sortie</th><th>P&L</th><th>ROI</th><th>Tx</th></tr></thead>
+      <tbody id="ptb"></tbody><tfoot id="ptf"></tfoot>
+    </table></div>
   </section>
-
-  <!-- Section 2 : Inspecteur de Manche & Timing 5 min (Euphoria Style) -->
-  <section class="wide">
-    <div class="row" style="justify-content:space-between; margin-bottom:4px;">
-      <h2>Timing de la Manche (5 min) & Décomposition de l'Ordre</h2>
-      <span class="muted" style="font-size:12px;">Sélectionne un trade ci-dessous pour voir sa chronologie</span>
-    </div>
-
-    <!-- Quick Trade Chips -->
-    <div class="chips-row" id="trade-chips"></div>
-
-    <!-- Timeline 5m Euphoria Style -->
-    <div class="timeline-wrap">
-      <div class="timeline-track">
-        <div class="t-zone-obs" title="Observation (0 à 178s)"></div>
-        <div class="t-zone-win" title="Fenêtre de tir F20 (178s à 182s = 120s restantes)"></div>
-        <div class="t-zone-hold" title="Tenue de la position (182s à 300s = 120s)"></div>
-        <div class="t-pin" id="timeline-pin" style="left: 60.0%;"></div>
-      </div>
-      <div class="timeline-labels">
-        <span>0:00 (Strike fixé)</span>
-        <span>1:00</span>
-        <span>2:00</span>
-        <span style="color:var(--accent); font-weight:700;">🎯 3:00 (Tir F20 - 120s fin)</span>
-        <span>4:00</span>
-        <span>5:00 (Règlement Pyth)</span>
-      </div>
-    </div>
-
-    <!-- Selected Round Details in Two-Column Grid -->
-    <div class="two" style="margin-top:10px;" id="trade-detail-grid">
-      <!-- Injected by JS -->
-    </div>
-  </section>
-
-  <!-- Section 3 : Tableau Détaillé des Trades (Euphoria Style) -->
-  <section class="wide">
-    <div class="row" style="justify-content:space-between; margin-bottom:10px;">
-      <h2>Historique Détaillé des Positions</h2>
-      <div class="row">
-        <button class="filter-btn primary" data-f="all">Tous (<span id="cnt-all">0</span>)</button>
-        <button class="filter-btn" data-f="won">Gagnés (<span id="cnt-won">0</span>)</button>
-        <button class="filter-btn" data-f="lost">Perdus (<span id="cnt-lost">0</span>)</button>
-        <button class="filter-btn" data-f="up">UP (<span id="cnt-up">0</span>)</button>
-        <button class="filter-btn" data-f="down">DOWN (<span id="cnt-down">0</span>)</button>
-      </div>
-    </div>
-
-    <div class="scroll">
-      <table>
-        <thead>
-          <tr>
-            <th class="l">#</th>
-            <th class="l">Heure UTC</th>
-            <th class="l">Round Daily.fun</th>
-            <th class="l">Sens</th>
-            <th>Strike Pyth</th>
-            <th>Cote ask</th>
-            <th>Parts</th>
-            <th>Mise totale</th>
-            <th>Frais</th>
-            <th>Payout</th>
-            <th>P&L net</th>
-            <th>ROI</th>
-            <th>Solde après</th>
-            <th>Tx Solana</th>
-          </tr>
-        </thead>
-        <tbody id="trades-tbody"></tbody>
-        <tfoot id="trades-tfoot"></tfoot>
-      </table>
-    </div>
-  </section>
-
-  <!-- Section 4 : Règle de Jugement des 300 Trades & Microstructure S6 -->
-  <section>
-    <h2>Règle de Jugement des 300 Trades (F20)</h2>
-    <p class="muted">Engagement méthodologique strict : aucun filtre de prix ad hoc en cours de test.</p>
-    <table>
-      <tr><td class="l">Objectif fixé</td><td><b>300 trades fermés</b></td></tr>
-      <tr><td class="l">Avancement actuel</td><td><b id="rule-progress">-</b></td></tr>
-      <tr><td class="l">Condition de maintien #1</td><td>Niveau 1 positif (<b id="rule-pnl-status">-</b>)</td></tr>
-      <tr><td class="l">Condition de maintien #2</td><td>Victoires &gt; Somme des prix + 2σ (<b id="rule-z-status">-</b>)</td></tr>
-      <tr><td class="l">Somme des prix payés (&sum; p<sub>i</sub>)</td><td id="rule-sum-p">- $</td></tr>
-      <tr><td class="l">Victoires réelles (W)</td><td id="rule-wins">-</td></tr>
-      <tr><td class="l">Écart standard (&sigma;)</td><td id="rule-sigma">-</td></tr>
-      <tr><td class="l">Z-score actuel (W - &sum;p) / &sigma;</td><td><b id="rule-zscore">-</b></td></tr>
-    </table>
-  </section>
-
-  <!-- Section 5 : Paramètres Actifs du Bot Live -->
-  <section>
-    <h2>Paramètres Actifs du Bot (Canada VPS)</h2>
-    <table>
-      <tr><td class="l">Stratégie</td><td><b>S6 Forward Edge Model</b></td></tr>
-      <tr><td class="l">Filtre Volatilité Réelle</td><td><code>&sigma;<sub>M</sub> &lt; 2.30 $/&radic;s</code> (calme)</td></tr>
-      <tr><td class="l">Filtre d'Edge Minimum</td><td><code>q - cost &ge; +0.05</code> (+5 c net)</td></tr>
-      <tr><td class="l">Fenêtre d'Exécution F20</td><td><code>118s &agrave; 122s</code> restantes (2 min fin)</td></tr>
-      <tr><td class="l">Capital Alloué par Trade</td><td><code>12%</code> du solde disponible</td></tr>
-      <tr><td class="l">Plancher Dur de Sécurité</td><td><code>25.00 $</code> (arrêt si atteint)</td></tr>
-      <tr><td class="l">Flux Ticks Haute Fréquence</td><td>Binance Futures BTCUSDT bookTicker</td></tr>
-      <tr><td class="l">Oracle de Dénouement</td><td>Pyth Network BTC/USD (à closeTs)</td></tr>
-    </table>
-  </section>
-
 </main>
-
 <script>
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-const money = (x, d = 2) => x == null ? '-' : `${x >= 0 ? '+' : ''}${x.toFixed(d)} $`;
-const cls = (x) => x == null ? '' : x >= 0 ? 'pos' : 'neg';
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const pct = (p, s) => (s ? ` (${(100 * p / s).toFixed(1)} %/$)` : ''); // P&L per accepted $ next to every P&L
+const usd = (x, d = 2) => (x == null ? '-' : `${x >= 0 ? '+' : ''}${x.toFixed(d)} $`), cls = (x) => (x == null ? 'muted' : x >= 0 ? 'pos' : 'neg');
+const hm = (t) => new Date(t).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const r2 = (x) => +Number(x).toFixed(2);
+const LINES = ['#2458d6', '#0f8a4a', '#b26a00', '#7a3fd6', '#c026a8', '#3b9be8', '#c62828'];
+const betClass = (b) => (b == null ? null : b <= 2 ? 0 : b <= 5 ? 1 : b <= 10 ? 2 : b <= 20 ? 3 : b <= 40 ? 4 : 5); // USD per trade (Daily); Euphoria's was per square
+let H = 24; try { H = +localStorage.fleetHours || 24; } catch {}
+let data = null, cur = 1, known = null; // cur: cursor, share of the window (1 = now)
 
-let allTrades = [];
-let selectedIndex = null;
-let currentFilter = 'all';
+function line(pts, lo, hi, h, color, w = 1.5) { // pts: cumulative values, one per bucket
+  const n = pts.length, y = (v) => (hi === lo ? h / 2 : h - 4 - (v - lo) / (hi - lo) * (h - 8));
+  return `<polyline fill="none" stroke="${color}" stroke-width="${w}" points="${pts.map((v, i) => `${((i + 1) / n * 1000).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}"/>`;
+}
+const zero = (lo, hi, h) => (lo < 0 && hi > 0 ? `<line class="zero" x1="0" x2="1000" y1="${(h - 4 + lo / (hi - lo) * (h - 8)).toFixed(1)}" y2="${(h - 4 + lo / (hi - lo) * (h - 8)).toFixed(1)}"/>` : '');
+const cursor = (h) => `<rect class="sel" x="0" width="0" y="0" height="${h}"/><line class="cur" x1="0" x2="0" y1="0" y2="${h}"/>`; // with the picked period's band
+const range = (a) => [Math.min(0, ...a), Math.max(0, ...a)];
+// Time-axis zoom of every chart at once (05/10 user: trackpad pinch). V = the part of the 0..1000 axis shown; the
+// curves' vertical scale follows the buckets in view. a = the axis point under the pointer, which stays put; f > 1
+// zooms out. Never narrower than 6 buckets of 144, never past the window's ends.
+let V = [0, 1000];
+function zoomAt(v, a, f, minW = 1000 * 6 / 144) {
+  const w = Math.min(1000, Math.max(minW, (v[1] - v[0]) * f)), x0 = Math.min(1000 - w, Math.max(0, a - (a - v[0]) * w / (v[1] - v[0])));
+  return [x0, x0 + w];
+}
+const panBy = (v, dx) => { const w = v[1] - v[0], x0 = Math.min(1000 - w, Math.max(0, v[0] + dx)); return [x0, x0 + w]; };
+// Period measured by click + drag on any chart (05/10 user): P&L and %/$ over whole buckets, from the one under the
+// press through the one under the pointer. Kept as times [t0, t1]: it stays on the same orders, to the nearest bucket,
+// while the window slides at each refresh. A click without a drag clears it.
+let sel = null, pick = null;
+function pickBuckets(a, b, n) { // a, b on the 0..1000 axis, either order -> [first, last] of n buckets
+  const k = (x) => Math.min(n - 1, Math.max(0, Math.floor(x / 1000 * n)));
+  return [k(Math.min(a, b)), k(Math.max(a, b))];
+}
+function bucketsIn(t0, t1, from, to, n) { // the buckets whose middle is in [t0, t1]; null once out of the window
+  const ms = (to - from) / n, i = Math.max(0, Math.ceil((t0 - from) / ms - 0.5)), j = Math.min(n - 1, Math.floor((t1 - from) / ms - 0.5));
+  return i <= j ? [i, j] : null;
+}
+function period(b, s) { // one account's numbers over period s, with the exact span that was summed
+  const T = b.timeline, n = T.length, k = s && bucketsIn(s[0], s[1], b.from, b.to, n); if (!k) return null;
+  let pnl = 0, staked = 0; for (let i = k[0]; i <= k[1]; i++) { pnl += T[i].pnl; staked += T[i].staked; }
+  return { from: T[k[0]].t, to: Math.round(T[k[1]].t + (b.to - b.from) / n), pnl, staked };
+}
+const when = (p) => { const a = hm(p.from), z = hm(p.to); return `${a} - ${z.slice(0, 5) === a.slice(0, 5) ? z.slice(-5) : z}`; };
+const perText = (p) => `<b>Période ${esc(when(p))}</b> · P&L <span class="${cls(p.pnl)}">${usd(p.pnl)}</span>${pct(p.pnl, p.staked)} · misé ${p.staked.toFixed(2)} $`;
+// Panel layout (05/10 user, like slides): drag a panel's corner (.grip) to size it, its title's ⠿ (.mv) to move it.
+// Width grows by twice the drag: rows are centred, so the panel's edge stays under the pointer. Sizes snap to the other
+// panels' sizes and to 1/3, 1/2, 2/3, 1/1 of the room (page width; window height under the top bar), within 12 px;
+// Option/Alt held = no snap. Sizes and order are kept in this browser only.
+function sizeAt(s, dx, dy, room) { // s: { w, h } when the drag started (px), room: { w, h } available
+  return { w: Math.round(Math.min(Math.max(240, s.w + 2 * dx), room.w)), h: Math.round(Math.min(Math.max(120, s.h + dy), 2 * room.h)) };
+}
+function snap(v, cands, tol = 12) { // nearest candidate { v, label } within tol, else v unchanged
+  let best = null; for (const c of cands) { const d = Math.abs(v - c.v); if (d <= tol && (!best || d < best.d)) best = { ...c, d }; }
+  return best ? { v: Math.round(best.v), label: best.label } : { v, label: '' };
+}
+function fracCands(room, gap) { // k of n equal slots, the gaps between them included
+  const f = (n, k) => (k * (room - (n - 1) * gap)) / n + (k - 1) * gap;
+  return [{ v: room, label: '1/1' }, { v: f(2, 1), label: '1/2' }, { v: f(3, 1), label: '1/3' }, { v: f(3, 2), label: '2/3' }];
+}
+function moveKey(order, k, target, after) { // order without k, then k put before / after target
+  const o = order.filter((x) => x !== k), i = o.indexOf(target); if (i < 0) return order;
+  o.splice(after ? i + 1 : i, 0, k); return o;
+}
+let SIZES = {}, ORDER = [];
+try { SIZES = JSON.parse(localStorage.fleetSizes || '{}') || {}; ORDER = JSON.parse(localStorage.fleetOrder || '[]') || []; } catch {}
+const saveLayout = () => { try { localStorage.fleetSizes = JSON.stringify(SIZES); localStorage.fleetOrder = JSON.stringify(ORDER); } catch {} };
+const orderOf = (k) => { if (!ORDER.includes(k)) ORDER.push(k); return ORDER.indexOf(k); };
+const panelAttrs = (k) => { const z = SIZES[k] ?? {};
+  return `class="${z.h ? 'fixh' : ''}" style="order:${orderOf(k)};${z.w ? `--w:${z.w}px;` : ''}${z.h ? `--h:${z.h}px;` : ''}"`; };
+function applyPanel(s, k) { const z = SIZES[k] ?? {};
+  s.style.order = orderOf(k); z.w ? s.style.setProperty('--w', `${z.w}px`) : s.style.removeProperty('--w');
+  z.h ? s.style.setProperty('--h', `${z.h}px`) : s.style.removeProperty('--h'); s.classList.toggle('fixh', !!z.h); }
+const inView = (T) => T.slice(Math.max(0, Math.floor(V[0] / 1000 * T.length) - 1), Math.min(T.length, Math.ceil(V[1] / 1000 * T.length) + 1));
 
-// Euphoria-Style Line Chart for Balance Evolution
-function renderBalanceCurve(trades, startBalance = 51.62) {
-  const container = $('chart-curve');
-  if (!trades || trades.length === 0) {
-    container.innerHTML = '<p class="muted">Aucun trade enregistré.</p>';
-    return;
-  }
-
-  const points = [[0, startBalance]];
-  trades.forEach(t => {
-    points.push([t.index, t.balanceAfter]);
-  });
-
-  const W = 1000, H = 220, P_LEFT = 50, P_RIGHT = 30, P_TOP = 20, P_BOT = 30;
-  const ys = points.map(p => p[1]);
-  const minVal = Math.floor(Math.min(startBalance, ...ys) - 2);
-  const maxVal = Math.ceil(Math.max(startBalance, ...ys) + 3);
-
-  const X = (i) => P_LEFT + (i / (points.length - 1 || 1)) * (W - P_LEFT - P_RIGHT);
-  const Y = (v) => H - P_BOT - ((v - minVal) / (maxVal - minVal || 1)) * (H - P_TOP - P_BOT);
-
-  const numTicks = 5;
-  const gridVals = Array.from({ length: numTicks + 1 }, (_, i) => minVal + ((maxVal - minVal) * i) / numTicks);
-
-  // Path data
-  const lineD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${X(i).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join(' ');
-  const areaD = `${lineD} L ${X(points.length - 1).toFixed(1)} ${Y(minVal).toFixed(1)} L ${X(0).toFixed(1)} ${Y(minVal).toFixed(1)} Z`;
-
-  const baseY = Y(startBalance);
-
-  let dotsHtml = points.map((p, i) => {
-    if (i === 0) return '';
-    const t = trades[i - 1];
-    const isSel = t.index === selectedIndex;
-    const color = t.won ? 'var(--good)' : 'var(--bad)';
-    return `<circle cx="${X(i).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="${isSel ? 5 : 3}" fill="${color}" stroke="var(--card)" stroke-width="1.5" style="cursor:pointer;" onclick="selectTrade(${t.index})">
-      <title>Trade #${t.index}: ${t.side} (${money(t.pnl)}) | P&L cumulé: ${money(t.cumPnl)}</title>
-    </circle>`;
-  }).join('');
-
-  container.innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Courbe de solde">
-      <!-- Grid lines -->
-      <g class="grid">
-        ${gridVals.map(v => `
-          <line class="axis" x1="${P_LEFT}" x2="${W - P_RIGHT}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}"/>
-          <text x="${P_LEFT - 8}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${v.toFixed(0)} $</text>
-        `).join('')}
-      </g>
-
-      <!-- Baseline 51.62$ -->
-      <line x1="${P_LEFT}" x2="${W - P_RIGHT}" y1="${baseY.toFixed(1)}" y2="${baseY.toFixed(1)}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>
-      <text x="${W - P_RIGHT + 4}" y="${(baseY + 4).toFixed(1)}" fill="var(--muted)" font-size="10">Base (51.62 $)</text>
-
-      <!-- Shaded Area -->
-      <path d="${areaD}" fill="color-mix(in srgb, var(--accent) 12%, transparent)"/>
-
-      <!-- Main Curve -->
-      <path d="${lineD}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>
-
-      <!-- Trade Dots -->
-      ${dotsHtml}
-
-      <!-- Bottom Index Labels -->
-      <g class="grid">
-        ${points.map((p, i) => {
-          if (i === 0 || i % Math.max(1, Math.floor(points.length / 8)) !== 0) return '';
-          return `<text x="${X(i).toFixed(1)}" y="${H - 10}" text-anchor="middle">#${i}</text>`;
-        }).join('')}
-      </g>
-    </svg>
-  `;
+function card(b, i) {
+  if (b.error) return `<section style="order:999"><div class="row"><h2>${esc(b.name)}</h2><span class="badge stopped">${esc(b.error)}</span></div></section>`;
+  const T = b.timeline, n = T.length, w = 1000 / n, [lo, hi] = range(inView(T).map((x) => x.cum));
+  const abs = T.map((x) => Math.abs(x.pnl)).filter(Boolean).sort((x, y) => x - y), scale = abs[Math.floor(abs.length * 0.9)] || 1;
+  const pnl = T.map((x, k) => (x.n && x.pnl ? `<rect x="${(k * w).toFixed(1)}" width="${(w + 0.3).toFixed(1)}" y="0" height="14" fill="var(${x.pnl > 0 ? '--good' : '--bad'})" opacity="${(0.25 + 0.75 * Math.min(1, Math.abs(x.pnl) / scale)).toFixed(2)}"/>` : '')).join('');
+  const bet = T.map((x, k) => (x.bet == null ? '' : `<rect x="${(k * w).toFixed(1)}" width="${(w + 0.3).toFixed(1)}" y="0" height="14" fill="var(--b${betClass(x.bet)})"/>`)).join('');
+  const at = (t) => ((t - b.from) / (b.to - b.from) * 1000).toFixed(1);
+  const marks = b.changes.map((c) => `<line class="mk" x1="${at(c.t)}" x2="${at(c.t)}" y1="0" y2="14"><title>${esc(hm(c.t))} ${esc(c.text)}</title></line>`).join('')
+    + b.jumps.map((j) => `<line class="mk jump" x1="${at(j.t)}" x2="${at(j.t)}" y1="0" y2="14"><title>${esc(hm(j.t))} ${j.kind === 'deposit' ? 'dépôt' : 'retrait'} ${j.amount} $</title></line>`).join('');
+  const flag = { restricted: 'RESTREINT 0,10 $', blocked: 'ORDRES BLOQUÉS', ok: b.tier ? `niveau ${esc(b.tier.tier)}` : 'ordres OK', unknown: 'niveau inconnu' }[b.flag];
+  const W = b.windows, k = (label, v, extra = '') => `<div class="kpi"><b class="${cls(v)}">${usd(v)}</b><span>${label}${extra}</span></div>`;
+  return `<section data-i="${i}" data-k="${esc(b.name)}" ${panelAttrs(b.name)}>
+  <div class="row"><h2><i class="mv" title="tirer pour déplacer · double-clic : disposition par défaut">⠿</i><i class="sw" style="background:${LINES[i % LINES.length]}"></i>${data.bots.length > 1 ? esc(b.name) : 'P&L'}</h2>
+    <span class="badge ${esc(b.state)}">${b.never ? 'jamais lancé' : esc({ running: 'en marche', paused: 'en pause', stopped: 'arrêté', 'warming-up': 'échauffement' }[b.state] ?? b.state)}${b.mode === 'dry-run' ? ' (test)' : ''}</span>
+    <span class="badge ${b.flag}" title="${esc(b.flagWhy)}">${flag}</span><span class="grow"></span>
+    <div class="kpi"><b>${b.balance == null ? '-' : b.balance.toFixed(2) + ' $'}</b><span>solde (plancher ${b.floor ?? '-'})</span></div>
+    <div class="kpi"><b>${b.sizing ? `${b.sizing.clicks > 1 ? b.sizing.clicks + ' x ' : ''}${b.sizing.stake} $` : '-'}</b><span>mise par trade</span></div>
+    ${W.m15 ? k('15 min', W.m15.pnl, pct(W.m15.pnl, W.m15.staked)) : k('15 min', b.pnl15)}${k('1 h', W.h1.pnl, W.h1.pct == null ? '' : ` (${W.h1.pct} %/$)`)}${k('6 h', W.h6.pnl, W.h6.pct == null ? '' : ` (${W.h6.pct} %/$)`)}${k(`${H} h`, W.all.pnl, W.all.pct == null ? '' : ` (${W.all.pct} %/$)`)}
+    <div class="kpi"><b>${W.h1.orders ? W.h1.refusedPct + ' %' : '-'}</b><span>refus 1 h</span></div>
+  </div>
+  <div class="chart">
+    <span>cumul</span><svg class="curve plot" viewBox="0 0 1000 64" preserveAspectRatio="none">${zero(lo, hi, 64)}${line(T.map((x) => x.cum), lo, hi, 64, LINES[i % LINES.length])}${cursor(64)}</svg>
+    <span>P&L</span><svg class="strip plot" viewBox="0 0 1000 14" preserveAspectRatio="none">${pnl}${cursor(14)}</svg>
+    <span>mise</span><svg class="strip plot" viewBox="0 0 1000 14" preserveAspectRatio="none">${bet}${marks}${cursor(14)}</svg>
+    <span></span><div class="axis">${[0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${esc(hm(b.from + (V[0] + f * (V[1] - V[0])) / 1000 * (b.to - b.from)))}</span>`).join('')}</div>
+  </div>
+  <div class="per"></div>
+  <div class="read"></div>
+  <small>${esc(b.note)}${b.runStartedAt ? ` · run depuis ${esc(hm(Date.parse(b.runStartedAt)))}` : ''}</small>
+  <i class="grip" title="tirer pour agrandir (reste centré) · double-clic : taille normale"></i>
+</section>`;
 }
 
-// Euphoria-Style Bar Chart for P&L per round
-function renderPnlBars(trades) {
-  const container = $('chart-bars');
-  if (!trades || trades.length === 0) {
-    container.innerHTML = '';
-    return;
-  }
-
-  const W = 1000, H = 140, P_LEFT = 50, P_RIGHT = 30, P_TOP = 15, P_BOT = 25;
-  const vs = trades.map(t => t.pnl);
-  const maxAmp = Math.max(2, ...vs.map(Math.abs));
-
-  const zeroY = P_TOP + (H - P_TOP - P_BOT) / 2;
-  const bw = (W - P_LEFT - P_RIGHT) / trades.length;
-  const Y = (v) => zeroY - (v / maxAmp) * ((H - P_TOP - P_BOT) / 2);
-
-  const bars = trades.map((t, i) => {
-    const x = P_LEFT + i * bw + 2;
-    const w = Math.max(2, bw - 4);
-    const yVal = Y(t.pnl);
-    const barY = Math.min(zeroY, yVal);
-    const barH = Math.max(2, Math.abs(yVal - zeroY));
-    const fill = t.won ? 'var(--good)' : 'var(--bad)';
-    const isSel = t.index === selectedIndex;
-    const stroke = isSel ? 'stroke="var(--ink)" stroke-width="1.5"' : '';
-
-    return `<rect x="${x.toFixed(1)}" y="${barY.toFixed(1)}" width="${w.toFixed(1)}" height="${barH.toFixed(1)}" fill="${fill}" rx="2" ${stroke} style="cursor:pointer;" onclick="selectTrade(${t.index})">
-      <title>Trade #${t.index}: ${t.side} (${money(t.pnl)}) Cote: ${t.price}$</title>
-    </rect>
-    <text x="${(x + w / 2).toFixed(1)}" y="${H - 8}" fill="var(--muted)" font-size="9" text-anchor="middle">#${t.index}</text>`;
-  }).join('');
-
-  container.innerHTML = `
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="P&L par trade">
-      <line class="axis" x1="${P_LEFT}" x2="${W - P_RIGHT}" y1="${zeroY.toFixed(1)}" y2="${zeroY.toFixed(1)}" stroke-width="1"/>
-      <g class="grid">
-        <text x="${P_LEFT - 8}" y="${P_TOP + 8}" text-anchor="end">+${maxAmp.toFixed(1)} $</text>
-        <text x="${P_LEFT - 8}" y="${(zeroY + 3).toFixed(1)}" text-anchor="end">0</text>
-        <text x="${P_LEFT - 8}" y="${H - P_BOT}" text-anchor="end">-${maxAmp.toFixed(1)} $</text>
-      </g>
-      ${bars}
-    </svg>
-  `;
-}
-
-// Select a trade to inspect
-function selectTrade(idx) {
-  selectedIndex = idx;
-  renderAllComponents();
-}
-
-// Render the Detail Panel for Selected Trade
-function renderTradeDetail(t) {
-  const container = $('trade-detail-grid');
-  if (!t) {
-    container.innerHTML = '<p class="muted">Sélectionne un trade.</p>';
-    return;
-  }
-
-  // Position pin in timeline: elapsedSeconds / 300 * 100
-  const pinPct = Math.min(100, Math.max(0, (t.elapsedSeconds / 300) * 100));
-  const pinEl = $('timeline-pin');
-  if (pinEl) pinEl.style.left = `${pinPct.toFixed(1)}%`;
-
-  container.innerHTML = `
-    <div style="background:var(--bg); padding:10px 14px; border-radius:8px; border:1px solid var(--line);">
-      <div class="row" style="justify-content:space-between; margin-bottom:6px;">
-        <span style="font-weight:700;">Détails Position #${t.index}</span>
-        <span class="pill ${t.side === 'UP' ? 'pill-up' : 'pill-down'}">${t.side === 'UP' ? '▲ UP' : '▼ DOWN'}</span>
-      </div>
-      <table style="font-size:12px;">
-        <tr><td class="l">Round</td><td class="l"><code>${esc(t.slug.replace('btc-updown-5m-', ''))}</code></td></tr>
-        <tr><td class="l">Horodatage</td><td>${t.time.substring(11, 19)} UTC</td></tr>
-        <tr><td class="l">Strike Pyth (openPrice)</td><td><b>${t.openPrice ? t.openPrice.toFixed(2) + ' $' : '-'}</b></td></tr>
-        <tr><td class="l">Cote d'achat (Ask Level 1)</td><td><b>${t.price.toFixed(3)} $</b></td></tr>
-        <tr><td class="l">Timing restant au tir</td><td><b>${t.secondsRemaining}s</b> (T+${t.elapsedSeconds}s)</td></tr>
-        <tr><td class="l">Volume de parts</td><td><b>${t.size} parts</b></td></tr>
-      </table>
-    </div>
-
-    <div style="background:var(--bg); padding:10px 14px; border-radius:8px; border:1px solid var(--line);">
-      <div class="row" style="justify-content:space-between; margin-bottom:6px;">
-        <span style="font-weight:700;">Financier & Dénouement</span>
-        <span class="badge ${t.won ? 'running' : 'offline'}">${t.won ? '✓ GAGNÉ' : '✗ PERDU'}</span>
-      </div>
-      <table style="font-size:12px;">
-        <tr><td class="l">Mise brute</td><td>${t.cost.toFixed(2)} $</td></tr>
-        <tr><td class="l">Frais taker (700 bps)</td><td>${t.fee.toFixed(3)} $</td></tr>
-        <tr><td class="l">Mise totale débitée</td><td><b>${t.totalMise.toFixed(2)} $</b></td></tr>
-        <tr><td class="l">Payout perçu (1.00$/sh si gagné)</td><td><b>${t.payout.toFixed(2)} $</b></td></tr>
-        <tr><td class="l">P&L Net de l'opération</td><td><b class="${cls(t.pnl)}">${money(t.pnl)}</b></td></tr>
-        <tr><td class="l">Rendement net (ROI)</td><td><b class="${cls(t.roi)}">${t.roi > 0 ? '+' : ''}${t.roi}%</b></td></tr>
-      </table>
-    </div>
-  `;
-}
-
-// Render the Table of Trades Euphoria Style
-function renderTradesTable(trades) {
-  const tbody = $('trades-tbody');
-  const tfoot = $('trades-tfoot');
-
-  let filtered = trades;
-  if (currentFilter === 'won') filtered = trades.filter(t => t.won);
-  if (currentFilter === 'lost') filtered = trades.filter(t => !t.won);
-  if (currentFilter === 'up') filtered = trades.filter(t => t.side === 'UP');
-  if (currentFilter === 'down') filtered = trades.filter(t => t.side === 'DOWN');
-
-  tbody.innerHTML = filtered.map(t => {
-    const isSel = t.index === selectedIndex;
-    const timeStr = esc(t.time.substring(11, 19));
-    const shortSlug = esc(t.slug.replace('btc-updown-5m-', ''));
-    const shortSig = t.sig ? `${esc(t.sig.substring(0, 4))}...${esc(t.sig.substring(t.sig.length - 4))}` : '-';
-    const solscanUrl = t.sig ? `https://solscan.io/tx/${encodeURIComponent(t.sig)}` : '#';
-
-    return `
-      <tr class="${isSel ? 'selected-row' : ''}" style="cursor:pointer;" onclick="selectTrade(${t.index})">
-        <td class="l"><b>#${t.index}</b></td>
-        <td class="l muted">${timeStr}</td>
-        <td class="l"><code>${shortSlug}</code></td>
-        <td class="l"><span class="pill ${t.side === 'UP' ? 'pill-up' : 'pill-down'}">${t.side}</span></td>
-        <td>${t.openPrice ? t.openPrice.toFixed(1) : '-'}</td>
-        <td>${t.price.toFixed(3)}</td>
-        <td>${t.size}</td>
-        <td>${t.totalMise.toFixed(2)} $</td>
-        <td class="muted">${t.fee.toFixed(3)} $</td>
-        <td>${t.payout.toFixed(2)} $</td>
-        <td class="${cls(t.pnl)}"><b>${money(t.pnl)}</b></td>
-        <td class="${cls(t.roi)}">${t.roi > 0 ? '+' : ''}${t.roi}%</td>
-        <td><b>${t.balanceAfter.toFixed(2)} $</b></td>
-        <td><a href="${solscanUrl}" target="_blank" style="color:var(--accent); text-decoration:none;" onclick="event.stopPropagation();"><code>${shortSig}</code></a></td>
-      </tr>
-    `;
-  }).join('');
-
-  // Total line in tfoot
-  const totMise = filtered.reduce((acc, t) => acc + t.totalMise, 0);
-  const totFee = filtered.reduce((acc, t) => acc + t.fee, 0);
-  const totPay = filtered.reduce((acc, t) => acc + t.payout, 0);
-  const totPnl = filtered.reduce((acc, t) => acc + t.pnl, 0);
-  const totShares = filtered.reduce((acc, t) => acc + t.size, 0);
-
-  tfoot.innerHTML = `
-    <tr style="font-weight:700; border-top:2px solid var(--line);">
-      <td class="l" colspan="6">TOTAL (${filtered.length} trades affichés)</td>
-      <td>${totShares}</td>
-      <td>${totMise.toFixed(2)} $</td>
-      <td>${totFee.toFixed(3)} $</td>
-      <td>${totPay.toFixed(2)} $</td>
-      <td class="${cls(totPnl)}">${money(totPnl)}</td>
-      <td class="${cls(totPnl)}">${totMise > 0 ? ((totPnl / totMise) * 100).toFixed(1) : 0}%</td>
-      <td colspan="2"></td>
-    </tr>
-  `;
-}
-
-// Render All Components
-function renderAllComponents() {
-  if (!allTrades || allTrades.length === 0) return;
-
-  // Keep latest trade selected if none selected
-  if (selectedIndex == null || !allTrades.some(t => t.index === selectedIndex)) {
-    selectedIndex = allTrades[allTrades.length - 1].index;
-  }
-
-  // 1. Update Trade Chips
-  const chipsContainer = $('trade-chips');
-  if (chipsContainer) {
-    chipsContainer.innerHTML = allTrades.slice().reverse().map(t => `
-      <div class="chip ${t.won ? 'won' : 'lost'} ${t.index === selectedIndex ? 'active' : ''}" onclick="selectTrade(${t.index})">
-        #${t.index} ${t.side} (${money(t.pnl)})
-      </div>
-    `).join('');
-  }
-
-  // 2. Charts
-  renderBalanceCurve(allTrades);
-  renderPnlBars(allTrades);
-
-  // 3. Detail
-  const selectedTrade = allTrades.find(t => t.index === selectedIndex);
-  renderTradeDetail(selectedTrade);
-
-  // 4. Table
-  renderTradesTable(allTrades);
-
-  // 5. Counts on filter buttons
-  $('cnt-all').textContent = allTrades.length;
-  $('cnt-won').textContent = allTrades.filter(t => t.won).length;
-  $('cnt-lost').textContent = allTrades.filter(t => !t.won).length;
-  $('cnt-up').textContent = allTrades.filter(t => t.side === 'UP').length;
-  $('cnt-down').textContent = allTrades.filter(t => t.side === 'DOWN').length;
-}
-
-// Main Polling Loop
-async function syncData() {
-  try {
-    const res = await fetch('/api/trades');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-
-    if (data && Array.isArray(data.trades) && data.trades.length > 0) {
-      allTrades = data.trades;
-
-      // Header KPIs
-      const bal = data.balance != null ? Number(data.balance) : allTrades[allTrades.length - 1].balanceAfter;
-      const netPnl = allTrades.reduce((acc, t) => acc + (t.pnl || 0), 0);
-      const totStaked = allTrades.reduce((acc, t) => acc + (t.totalMise || (t.cost + t.fee)), 0);
-      const totPayout = allTrades.reduce((acc, t) => acc + (t.payout || 0), 0);
-      const totFees = allTrades.reduce((acc, t) => acc + (t.fee || 0), 0);
-      const roiTotal = totStaked > 0 ? (netPnl / totStaked) * 100 : 0;
-
-      const wins = allTrades.filter(t => t.won).length;
-      const total = allTrades.length;
-      const wr = (wins / total) * 100;
-
-      $('hdr-bal').textContent = bal.toFixed(2) + ' $';
-      $('hdr-pnl').textContent = money(netPnl);
-      $('hdr-pnl').className = cls(netPnl);
-      $('hdr-roi').textContent = (roiTotal >= 0 ? '+' : '') + roiTotal.toFixed(1) + '%';
-      $('hdr-wr').textContent = wr.toFixed(1) + '%';
-      $('hdr-score').textContent = `${wins}V / ${total - wins}D`;
-
-      const lastTrade = allTrades[allTrades.length - 1];
-      const lastT = new Date(lastTrade.time).getTime();
-      const minAgo = Math.max(0, Math.floor((Date.now() - lastT) / 60000));
-      $('hdr-last').textContent = minAgo < 1 ? "à l'instant" : `il y a ${minAgo} min`;
-
-      // Summary KPIs
-      $('kpi-pnl').textContent = money(netPnl);
-      $('kpi-pnl').className = cls(netPnl);
-      $('kpi-wr').textContent = wr.toFixed(1) + '%';
-      $('kpi-wr').className = cls(netPnl);
-
-      $('kpi-staked').textContent = totStaked.toFixed(2) + ' $';
-      $('kpi-payout').textContent = totPayout.toFixed(2) + ' $';
-      $('kpi-fees').textContent = totFees.toFixed(3) + ' $';
-
-      // Statistics 300 Trades Rule:
-      // sum(p_i)
-      const sumP = allTrades.reduce((acc, t) => acc + t.price, 0);
-      const variance = allTrades.reduce((acc, t) => acc + (t.price * (1 - t.price)), 0);
-      const sigma = Math.sqrt(variance);
-      const zScore = sigma > 0 ? (wins - sumP) / sigma : 0;
-
-      $('kpi-zscore').textContent = (zScore >= 0 ? '+' : '') + zScore.toFixed(2) + ' σ';
-      $('kpi-zscore').className = zScore >= 2.0 ? 'pos' : zScore >= 0 ? 'pos' : 'neg';
-      $('kpi-progress').textContent = `${total} / 300 (${((total/300)*100).toFixed(0)}%)`;
-
-      // Rule box
-      $('rule-progress').textContent = `${total} / 300 trades (${((total / 300) * 100).toFixed(1)}%)`;
-      $('rule-pnl-status').textContent = netPnl > 0 ? 'VALIDÉ (+)' : 'EN RETARD (-)';
-      $('rule-pnl-status').className = netPnl > 0 ? 'pos' : 'neg';
-
-      $('rule-z-status').textContent = zScore >= 2.0 ? 'VALIDÉ (≥ 2σ)' : `${zScore.toFixed(2)}σ (cible: ≥ 2.00σ)`;
-      $('rule-z-status').className = zScore >= 2.0 ? 'pos' : 'muted';
-
-      $('rule-sum-p').textContent = sumP.toFixed(2) + ' $';
-      $('rule-wins').textContent = `${wins} victoires`;
-      $('rule-sigma').textContent = sigma.toFixed(2);
-      $('rule-zscore').textContent = (zScore >= 0 ? '+' : '') + zScore.toFixed(2) + ' σ';
-      $('rule-zscore').className = cls(zScore);
-
-      // Heartbeat status
-      if (data.heartbeat) {
-        const hb = data.heartbeat;
-        const stateTxt = $('bot-state-txt');
-        const badge = $('bot-badge');
-        if (hb.sigmaM != null) {
-          stateTxt.textContent = `en marche (F20 · σ: ${hb.sigmaM.toFixed(2)})`;
-          badge.className = hb.sigmaM < 2.30 ? 'badge running' : 'badge warmup';
-        }
-      }
-
-      // Render view
-      renderAllComponents();
-
-      // Pill timestamp
-      const d = new Date();
-      $('sync-pill').textContent = `Auto (${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')})`;
-      $('sync-pill').className = 'badge running';
+function totalCard(bots) {
+  const ok = bots.filter((b) => !b.error && b.timeline?.length);
+  if (ok.length <= 1) return '';
+  const ref = ok[0], n = ref.timeline.length, w = 1000 / n;
+  const T = Array.from({ length: n }, (_, k) => {
+    let pnl = 0, staked = 0, nOrd = 0, rej = 0;
+    for (const b of ok) {
+      const x = b.timeline[k];
+      if (x) { pnl += (x.pnl || 0); staked += (x.staked || 0); nOrd += (x.n || 0); rej += (x.rej || 0); }
     }
-  } catch(e) {
-    $('sync-pill').textContent = 'Erreur sync';
-    $('sync-pill').className = 'badge offline';
-  }
+    return { t: ref.timeline[k].t, pnl: r2(pnl), staked: r2(staked), n: nOrd, rej };
+  });
+  let cum = 0;
+  for (const x of T) { cum += x.pnl; x.cum = r2(cum); }
+  const [lo, hi] = range(inView(T).map((x) => x.cum));
+  const abs = T.map((x) => Math.abs(x.pnl)).filter(Boolean).sort((x, y) => x - y), scale = abs[Math.floor(abs.length * 0.9)] || 1;
+  const pnl = T.map((x, k) => (x.n && x.pnl ? `<rect x="${(k * w).toFixed(1)}" width="${(w + 0.3).toFixed(1)}" y="0" height="14" fill="var(${x.pnl > 0 ? '--good' : '--bad'})" opacity="${(0.25 + 0.75 * Math.min(1, Math.abs(x.pnl) / scale)).toFixed(2)}"/>` : '')).join('');
+
+  const sum = (f) => ok.reduce((s, b) => s + (f(b) ?? 0), 0);
+  const totalBal = sum((b) => b.balance);
+  const pnl15 = sum((b) => b.windows?.m15?.pnl ?? b.pnl15 ?? 0);
+  const st15 = sum((b) => b.windows?.m15?.staked ?? 0);
+  const pnl1 = sum((b) => b.windows?.h1?.pnl ?? 0);
+  const st1 = sum((b) => b.windows?.h1?.staked ?? 0);
+  const pnl6 = sum((b) => b.windows?.h6?.pnl ?? 0);
+  const st6 = sum((b) => b.windows?.h6?.staked ?? 0);
+  const pnlAll = sum((b) => b.windows?.all?.pnl ?? 0);
+  const stAll = sum((b) => b.windows?.all?.staked ?? 0);
+  const k = (label, v, extra = '') => `<div class="kpi"><b class="${cls(v)}">${usd(v)}</b><span>${label}${extra}</span></div>`;
+
+  return `<section data-total="1" data-k="Total" ${panelAttrs('Total')}>
+  <div class="row"><h2><i class="mv" title="tirer pour déplacer · double-clic : disposition par défaut">⠿</i><i class="sw" style="background:#f0b24a"></i>P&L Total (${ok.length} bots)</h2>
+    <span class="badge ok">combiné</span><span class="grow"></span>
+    <div class="kpi"><b>${totalBal.toFixed(2)} $</b><span>solde total</span></div>
+    ${k('15 min', pnl15, pct(pnl15, st15))}${k('1 h', pnl1, pct(pnl1, st1))}${k('6 h', pnl6, pct(pnl6, st6))}${k(`${H} h`, pnlAll, pct(pnlAll, stAll))}
+  </div>
+  <div class="chart">
+    <span>cumul</span><svg class="curve plot" viewBox="0 0 1000 64" preserveAspectRatio="none">${zero(lo, hi, 64)}${line(T.map((x) => x.cum), lo, hi, 64, '#f0b24a')}${cursor(64)}</svg>
+    <span>P&L</span><svg class="strip plot" viewBox="0 0 1000 14" preserveAspectRatio="none">${pnl}${cursor(14)}</svg>
+    <span></span><div class="axis">${[0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${esc(hm(ref.from + (V[0] + f * (V[1] - V[0])) / 1000 * (ref.to - ref.from)))}</span>`).join('')}</div>
+  </div>
+  <div class="per"></div>
+  <div class="read"></div>
+  <small>${ok.map((b) => esc(b.name)).join(' + ')} · ${ok.length} comptes</small>
+  <i class="grip" title="tirer pour agrandir (reste centré) · double-clic : taille normale"></i>
+</section>`;
 }
 
-// Filter button clicks
-document.querySelectorAll('.filter-btn').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('primary'));
-    btn.classList.add('primary');
-    currentFilter = btn.dataset.f;
-    renderTradesTable(allTrades);
-  };
+// Balance gauge (05/10 user): 0 % = the floor, 100 % = the automatic withdrawal; each part takes the colour of the base
+// stake per decision at that balance (same colours as the "mise" strip), solid up to the balance, faint above it.
+function fillBar(b, i) {
+  const f = b.fill; if (b.error || !f || b.balance == null) return '';
+  const x = (v) => Math.min(1000, Math.max(0, (v - f.lo) / (f.hi - f.lo) * 1000)), at = x(b.balance), p = (b.balance - f.lo) / (f.hi - f.lo) * 100;
+  const segs = f.bands.map((s) => {
+    const a = x(s.from), z = x(s.to), c = `var(--b${betClass(s.stake)})`, tip = `<title>${s.from} - ${s.to} $ : ${s.clicks} x ${s.size} $ par décision</title>`;
+    return (Math.min(z, at) > a ? `<rect x="${a.toFixed(1)}" width="${(Math.min(z, at) - a).toFixed(1)}" height="12" fill="${c}">${tip}</rect>` : '')
+      + (z > Math.max(a, at) ? `<rect x="${Math.max(a, at).toFixed(1)}" width="${(z - Math.max(a, at)).toFixed(1)}" height="12" fill="${c}" opacity=".25">${tip}</rect>` : '')
+      + (a > 0 ? `<line x1="${a.toFixed(1)}" x2="${a.toFixed(1)}" y1="0" y2="12" stroke="var(--card)"/>` : '');
+  }).join('');
+  return `<div class="fill"><span><i class="sw" style="background:${LINES[i % LINES.length]}"></i>${esc(b.name)} <b>${p.toFixed(0)} %</b> <small>${b.balance.toFixed(0)} $ · plancher ${f.lo} → retrait ${f.hi}</small></span>
+    <svg viewBox="0 0 1000 12" preserveAspectRatio="none">${segs}<line class="bal" x1="${at.toFixed(1)}" x2="${at.toFixed(1)}" y1="0" y2="12"/></svg></div>`;
+}
+
+function render() {
+  const B = data.bots, ok = B.filter((b) => !b.error), sum = (f) => ok.reduce((s, b) => s + (f(b) ?? 0), 0);
+  $('#tbal').textContent = sum((b) => b.balance).toFixed(2) + ' $';
+  for (const [id, v] of [['#t1', sum((b) => b.windows.h1.pnl)], ['#t6', sum((b) => b.windows.h6.pnl)], ['#tall', sum((b) => b.windows.all.pnl)]]) { $(id).textContent = usd(v); $(id).className = cls(v); }
+  $('#t1l').textContent = `P&L 1 h${pct(sum((b) => b.windows.h1.pnl), sum((b) => b.windows.h1.staked))}`;
+  $('#t6l').textContent = `P&L 6 h${pct(sum((b) => b.windows.h6.pnl), sum((b) => b.windows.h6.staked))}`;
+  $('#fills').innerHTML = B.map(fillBar).join('');
+  $('#talll').textContent = `P&L ${H} h${pct(sum((b) => b.windows.all.pnl), sum((b) => b.windows.all.staked))}`;
+  const al = B.flatMap((b) => b.alerts ?? (b.error ? [{ key: `${b.name}|error`, level: 'bad', text: `${b.name}: ${b.error}` }] : []));
+  $('#alerts').innerHTML = al.map((a) => `<div class="alert ${a.level}">${esc(a.text)}</div>`).join('');
+  document.title = (al.length ? `(${al.length}) ` : '') + 'Daily.fun - comptes';
+  if (known && window.Notification?.permission === 'granted') for (const a of al) if (!known.has(a.key)) { try { new Notification('Daily.fun', { body: a.text, tag: a.key }); } catch {} }
+  known = new Set(al.map((a) => a.key));
+  const totHtml = data.bots.length > 1 ? totalCard(B) : '';
+  $('#bots').innerHTML = (totHtml || '') + B.map(card).join('');
+  for (const s of document.querySelectorAll('svg.plot')) s.setAttribute('viewBox', `${V[0].toFixed(2)} 0 ${(V[1] - V[0]).toFixed(2)} ${s.viewBox.baseVal.height}`);
+  $('#zm').textContent = V[1] - V[0] < 999 ? `zoom x${(1000 / (V[1] - V[0])).toFixed(1)} · double-clic pour revenir` : '';
+  place();
+}
+function place() { // the cursor and the picked period on every chart, and each account's numbers under them
+  if (!data) return;
+  for (const l of document.querySelectorAll('.cur')) { l.setAttribute('x1', cur * 1000); l.setAttribute('x2', cur * 1000); }
+  const ok = data.bots.filter((b) => !b.error), ref = ok[0], P = new Map(ok.map((b) => [b, period(b, sel)])), p0 = P.get(ref);
+  const ax = (t) => (t - ref.from) / (ref.to - ref.from) * 1000;
+  for (const r of document.querySelectorAll('.sel')) { r.setAttribute('x', p0 ? ax(p0.from) : 0); r.setAttribute('width', p0 ? ax(p0.to) - ax(p0.from) : 0); }
+  for (const s of document.querySelectorAll('#bots section[data-i]')) {
+    s.querySelector('.per').innerHTML = P.get(data.bots[+s.dataset.i]) ? perText(P.get(data.bots[+s.dataset.i])) : '';
+    const b = data.bots[+s.dataset.i], T = b.timeline, j = Math.min(T.length - 1, Math.floor(cur * T.length)), x = T[j], ms = (b.to - b.from) / T.length;
+    const cumSt = T.slice(0, j + 1).reduce((v, y) => v + (y.staked ?? 0), 0);
+    s.querySelector('.read').innerHTML = `<b>${esc(hm(x.t))} - ${esc(hm(x.t + ms).slice(-5))}</b> · P&L <span class="${cls(x.pnl)}">${usd(x.pnl)}</span>${x.staked ? ` (${(100 * x.pnl / x.staked).toFixed(0)} %/$)` : ''} · mise ${x.bet == null ? '-' : x.bet.toFixed(2) + ' $ par trade'} · ${x.n} ordres, ${x.rej} refus · cumul <span class="${cls(x.cum)}">${usd(x.cum)}</span>${pct(x.cum, cumSt)}`;
+  }
+  const totSec = document.querySelector('#bots section[data-total]');
+  if (totSec && ok.length > 1) {
+    const n = ref.timeline.length, j = Math.min(n - 1, Math.floor(cur * n)), ms = (ref.to - ref.from) / n;
+    let totPnl = 0, totStaked = 0, totN = 0, totRej = 0;
+    for (const b of ok) { const x = b.timeline[j]; if (x) { totPnl += (x.pnl || 0); totStaked += (x.staked || 0); totN += (x.n || 0); totRej += (x.rej || 0); } }
+    let totCum = 0, totCumSt = 0;
+    for (let idx = 0; idx <= j; idx++) { for (const b of ok) { const x = b.timeline[idx]; if (x) { totCum += (x.pnl || 0); totCumSt += (x.staked || 0); } } }
+    const t = ref.timeline[j].t;
+    totSec.querySelector('.read').innerHTML = `<b>${esc(hm(t))} - ${esc(hm(t + ms).slice(-5))}</b> · P&L <span class="${cls(totPnl)}">${usd(totPnl)}</span>${totStaked ? ` (${(100 * totPnl / totStaked).toFixed(0)} %/$)` : ''} · ${totN} ordres, ${totRej} refus · cumul <span class="${cls(totCum)}">${usd(totCum)}</span>${pct(totCum, totCumSt)}`;
+    if (sel && p0) {
+      let pPnl = 0, pSt = 0;
+      for (const b of ok) { const p = P.get(b); if (p) { pPnl += p.pnl; pSt += p.staked; } }
+      totSec.querySelector('.per').innerHTML = `<b>Période ${esc(when(p0))}</b> · P&L <span class="${cls(pPnl)}">${usd(pPnl)}</span>${pct(pPnl, pSt)} · misé ${pSt.toFixed(2)} $`;
+    } else {
+      totSec.querySelector('.per').innerHTML = '';
+    }
+  }
+  positions();
+}
+// Positions (06/11 user: the Daily page's table, under the charts): the window's, or the period picked on a chart.
+// Rows are by entry time, as the charts' buckets, so the footer's P&L of "Toutes" equals the period's P&L.
+const OWNER = { bot: ['Bot', LINES[0]], lgb: ['LightGBM', LINES[1]] };
+const FILTERS = [['all', 'Toutes', () => true], ['bot', 'Bot', (t) => t.owner === 'bot'], ['lgb', 'LightGBM', (t) => t.owner === 'lgb'],
+  ['won', 'Gagnées', (t) => t.pnl > 0], ['lost', 'Perdues', (t) => t.pnl != null && t.pnl <= 0], ['stop', 'Stops', (t) => t.exit === 'stop'], ['open', 'En cours', (t) => t.pnl == null]];
+let filt = 'all', posKey = '';
+function positions(force) {
+  const ref = data.bots.find((b) => !b.error), p = ref && period(ref, sel);
+  const key = `${filt}|${p ? p.from + '-' + p.to : ''}|${data.at}`; if (!force && key === posKey) return; posKey = key;
+  const inP = (data.positions ?? []).filter((t) => !p || (Date.parse(t.time) >= p.from && Date.parse(t.time) < p.to));
+  $('#pscope').textContent = p ? `période ${when(p)}` : `${H} h`;
+  $('#pfilt').innerHTML = FILTERS.map(([k, n, g]) => `<button data-f="${k}" class="${k === filt ? 'on' : ''}">${n} (${inP.filter(g).length})</button>`).join('');
+  const rows = inP.filter(FILTERS.find((x) => x[0] === filt)[2]).slice().reverse(), money = (x) => (x == null ? '-' : `${x.toFixed(2)} $`);
+  $('#ptb').innerHTML = rows.map((t) => { const [on, oc] = OWNER[t.owner] ?? [t.owner, 'var(--muted)'];
+    return `<tr><td class="l"><b>#${t.index}</b></td><td class="l muted">${esc(hm(Date.parse(t.time)))}</td><td class="l"><i class="sw" style="background:${oc}"></i>${esc(on)}</td>
+    <td class="l"><code>${esc(String(t.slug).replace('btc-updown-5m-', ''))}</code></td><td class="l"><span class="pill ${t.side === 'UP' ? 'pill-up' : 'pill-down'}">${esc(t.side)}</span></td>
+    <td>${t.rem ?? '-'} s</td><td class="muted">${t.sigma ?? '-'}</td><td>${t.avgIn ?? '-'}</td><td>${t.sharesIn}</td><td>${money(t.cost)}</td>
+    <td class="l">${esc(t.exit)}${t.exitRem != null ? ` ${t.exitRem} s` : ''}</td><td>${t.avgOut ?? (t.resolution ? (t.resolution === t.side ? '1.000' : '0.000') : '-')}</td>
+    <td class="${cls(t.pnl)}"><b>${usd(t.pnl)}</b></td><td class="${cls(t.pnl)}">${t.pnl != null && t.cost ? (100 * t.pnl / t.cost).toFixed(0) + ' %' : '-'}</td>
+    <td>${t.sig ? `<a href="https://solscan.io/tx/${encodeURIComponent(t.sig)}" target="_blank" style="color:var(--accent)"><code>${esc(t.sig.slice(0, 4))}...</code></a>` : '-'}</td></tr>`; }).join('');
+  const done = rows.filter((t) => t.pnl != null), tp = done.reduce((s, t) => s + t.pnl, 0), tc = done.reduce((s, t) => s + t.cost, 0);
+  $('#ptf').innerHTML = `<tr><td class="l" colspan="9"><b>${rows.length} positions, ${done.length} réglées</b></td><td>${money(rows.reduce((s, t) => s + t.cost, 0))}</td><td colspan="2"></td><td class="${cls(tp)}"><b>${usd(tp)}</b></td><td class="${cls(tp)}">${tc ? (100 * tp / tc).toFixed(0) + ' %' : '-'}</td><td></td></tr>`;
+}
+$('#pfilt').addEventListener('click', (e) => { const f = e.target.dataset?.f; if (!f || !data) return; filt = f; positions(true); });
+const axisX = (cx, r) => V[0] + Math.min(1, Math.max(0, (cx - r.left) / r.width)) * (V[1] - V[0]); // 0..1000 axis, r: the chart's box
+const plotX = (e, p) => axisX(e.clientX, p.getBoundingClientRect());
+const move = (e) => { const p = e.target.closest?.('.plot'); if (!p) return; cur = plotX(e.touches?.[0] ?? e, p) / 1000; place(); };
+document.addEventListener('mousemove', move); document.addEventListener('touchstart', move, { passive: true }); document.addEventListener('touchmove', move, { passive: true });
+// Pinch: Chrome and Firefox send ctrl+wheel, Safari gesture events. Two-finger sideways scroll pans once zoomed; the
+// page still scrolls vertically. One redraw per frame.
+let zoomFrame = 0, g0 = null;
+const setZoom = (v) => { V = v; if (!zoomFrame) zoomFrame = requestAnimationFrame(() => { zoomFrame = 0; if (data) render(); }); };
+document.addEventListener('wheel', (e) => {
+  const p = e.target.closest?.('.plot'); if (!p) return;
+  if (e.ctrlKey) { e.preventDefault(); setZoom(zoomAt(V, plotX(e, p), Math.exp(e.deltaY * 0.01))); }
+  else if (V[1] - V[0] < 1000 && Math.abs(e.deltaX) > Math.abs(e.deltaY)) { e.preventDefault(); setZoom(panBy(V, e.deltaX * (V[1] - V[0]) / p.getBoundingClientRect().width)); }
+}, { passive: false });
+document.addEventListener('gesturestart', (e) => { const p = e.target.closest?.('.plot'); if (!p) return; e.preventDefault(); g0 = { v: V, a: plotX(e, p) }; });
+document.addEventListener('gesturechange', (e) => { if (!g0) return; e.preventDefault(); setZoom(zoomAt(g0.v, g0.a, 1 / e.scale)); });
+document.addEventListener('gestureend', () => { g0 = null; });
+document.addEventListener('dblclick', (e) => { if (e.target.closest?.('.plot')) setZoom([0, 1000]); });
+// Click + drag on a chart: the period (see pickBuckets). The chart's box is read at the press, as the 30 s refresh
+// redraws the charts during a drag. Under 4 px it is a click: it clears the period.
+document.addEventListener('pointerdown', (e) => { const p = e.target.closest?.('.plot'); if (p && data && !e.button && !e.ctrlKey) pick = { x: e.clientX, r: p.getBoundingClientRect(), was: sel }; });
+document.addEventListener('pointermove', (e) => {
+  if (!pick) return; if (!(e.buttons & 1)) { pick = null; return; } // released outside the window
+  const ref = data.bots.find((b) => !b.error); if (!ref || (!pick.on && Math.abs(e.clientX - pick.x) < 4)) return;
+  const n = ref.timeline.length, ms = (ref.to - ref.from) / n, [i, j] = pickBuckets(axisX(pick.x, pick.r), axisX(e.clientX, pick.r), n);
+  pick.on = true; sel = [ref.from + i * ms, ref.from + (j + 1) * ms]; place();
+});
+document.addEventListener('pointerup', () => { if (!pick) return; if (!pick.on) sel = null; pick = null; place(); });
+document.addEventListener('pointercancel', () => { if (!pick) return; sel = pick.was; pick = null; place(); }); // a touch that became a scroll
+// Panel resize (.grip) and move (.mv). Panels are looked up by key at every move: the 30 s refresh redraws the bots'.
+let drag = null;
+const panel = (k) => [...document.querySelectorAll('section[data-k]')].find((s) => s.dataset.k === k);
+const panels = () => [...document.querySelectorAll('section[data-k]')];
+const room = () => { const m = $('main'), cs = getComputedStyle(m), pad = parseFloat(cs.paddingTop) || 16;
+  return { w: m.clientWidth - 2 * pad, h: innerHeight - ($('header')?.offsetHeight ?? 0) - 2 * pad, gap: parseFloat(cs.columnGap) || 14 }; };
+const tip = (e, text) => { const t = $('#snap'); t.textContent = text; t.style.display = text ? 'block' : 'none'; if (text) { t.style.left = `${e.clientX + 14}px`; t.style.top = `${e.clientY + 14}px`; } };
+document.addEventListener('pointerdown', (e) => {
+  const g = e.target.closest?.('.grip, .mv'), s = g?.closest('section[data-k]'); if (!s) return;
+  e.preventDefault(); try { g.setPointerCapture(e.pointerId); } catch {}
+  const r = s.getBoundingClientRect();
+  drag = { mode: g.classList.contains('mv') ? 'move' : 'size', k: s.dataset.k, x: e.clientX, y: e.clientY, w: r.width, h: r.height, room: room() };
+  if (drag.mode === 'move') s.classList.add('dragging');
+});
+document.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  if (drag.mode === 'size') {
+    const R = drag.room, z = sizeAt(drag, e.clientX - drag.x, e.clientY - drag.y, R);
+    const others = panels().filter((o) => o.dataset.k !== drag.k).map((o) => ({ k: o.dataset.k, r: o.getBoundingClientRect() }));
+    const sw = e.altKey ? { v: z.w, label: '' } : snap(z.w, [...fracCands(R.w, R.gap), ...others.map((o) => ({ v: o.r.width, label: `= ${o.k}` }))]);
+    const sh = e.altKey ? { v: z.h, label: '' } : snap(z.h, [...fracCands(R.h, R.gap), ...others.map((o) => ({ v: o.r.height, label: `= ${o.k}` }))]);
+    SIZES[drag.k] = { w: sw.v, h: sh.v }; const s = panel(drag.k); if (s) applyPanel(s, drag.k);
+    tip(e, `${sw.v} x ${sh.v} px${sw.label ? ` · largeur ${sw.label}` : ''}${sh.label ? ` · hauteur ${sh.label}` : ''}${e.altKey ? ' · sans aimant' : ''}`);
+  } else {
+    const t = document.elementFromPoint(e.clientX, e.clientY)?.closest?.('section[data-k]');
+    if (!t || t.dataset.k === drag.k) return;
+    const r = t.getBoundingClientRect(), after = r.width > 0.6 * drag.room.w ? e.clientY > r.top + r.height / 2 : e.clientX > r.left + r.width / 2;
+    const o = moveKey(ORDER, drag.k, t.dataset.k, after);
+    if (o.join('\n') !== ORDER.join('\n')) { ORDER = o; for (const p of panels()) p.style.order = orderOf(p.dataset.k); }
+  }
+});
+document.addEventListener('pointerup', () => { if (!drag) return; panel(drag.k)?.classList.remove('dragging'); drag = null; tip({}, ''); saveLayout(); });
+document.addEventListener('dblclick', (e) => { // grip: this panel's size back to normal; ⠿: the default order
+  const g = e.target.closest?.('.grip, .mv'), s = g?.closest('section[data-k]'); if (!s) return;
+  if (g.classList.contains('mv')) ORDER = []; else delete SIZES[s.dataset.k];
+  for (const p of panels()) applyPanel(p, p.dataset.k); saveLayout();
 });
 
-// Initial run + Polling every 3.5 seconds
-syncData();
-setInterval(syncData, 3500);
+async function load() {
+  try { const r = await fetch(`api/fleet?hours=${H}`); if (!r.ok) throw new Error(r.status); data = await r.json(); render(); $('#age').textContent = `à jour ${new Date(data.at).toLocaleTimeString('fr-FR')}`; }
+  catch { $('#age').textContent = 'serveur injoignable'; $('#age').className = 'neg'; return; }
+  $('#age').className = '';
+}
+function wins() { $('#wins').innerHTML = [6, 24, 72].map((h) => `<button data-h="${h}" class="${h === H ? 'on' : ''}">${h < 48 ? h + ' h' : h / 24 + ' j'}</button>`).join(''); }
+$('#wins').addEventListener('click', (e) => { const h = +e.target.dataset?.h; if (!h) return; H = h; V = [0, 1000]; try { localStorage.fleetHours = h; } catch {} wins(); load(); });
+if ('Notification' in window) {
+  const nb = $('#notif'), show = () => { nb.hidden = false; nb.className = Notification.permission === 'granted' ? 'on' : ''; nb.textContent = Notification.permission === 'granted' ? 'Notifications actives' : Notification.permission === 'denied' ? 'Notifications bloquées' : 'Activer les notifications'; };
+  nb.addEventListener('click', async () => { try { await Notification.requestPermission(); } catch {} show(); }); show();
+}
+wins(); load(); setInterval(load, 30e3);
 </script>
-
 </body>
 </html>
