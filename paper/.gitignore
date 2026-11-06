@@ -1,0 +1,3 @@
+# the repo root ignores *.py (research scripts); the paper trader code is meant to be tracked
+!*.py
+__pycache__/
