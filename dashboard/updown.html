@@ -196,7 +196,7 @@ function card(b, i) {
   <div class="row"><h2><i class="mv" title="tirer pour déplacer · double-clic : disposition par défaut">⠿</i><i class="sw" style="background:${LINES[i % LINES.length]}"></i>${data.bots.length > 1 ? esc(b.name) : 'P&L'}</h2>
     <span class="badge ${esc(b.state)}">${b.never ? 'jamais lancé' : esc({ running: 'en marche', paused: 'en pause', stopped: 'arrêté', 'warming-up': 'échauffement' }[b.state] ?? b.state)}${b.mode === 'dry-run' ? ' (test)' : ''}</span>
     <span class="badge ${b.flag}" title="${esc(b.flagWhy)}">${flag}</span><span class="grow"></span>
-    <div class="kpi"><b>${b.balance == null ? '-' : b.balance.toFixed(2) + ' $'}</b><span>solde (plancher ${b.floor ?? '-'})</span></div>
+    <div class="kpi"><b>${b.balance == null ? '-' : b.balance.toFixed(2) + ' $'}</b><span>solde (plancher du wallet ${b.floor ?? "-"})</span></div>
     <div class="kpi"><b>${b.sizing ? `${b.sizing.clicks > 1 ? b.sizing.clicks + ' x ' : ''}${b.sizing.stake} $` : '-'}</b><span>mise par trade</span></div>
     ${W.m15 ? k('15 min', W.m15.pnl, pct(W.m15.pnl, W.m15.staked)) : k('15 min', b.pnl15)}${k('1 h', W.h1.pnl, W.h1.pct == null ? '' : ` (${W.h1.pct} %/$)`)}${k('6 h', W.h6.pnl, W.h6.pct == null ? '' : ` (${W.h6.pct} %/$)`)}${k(`${H} h`, W.all.pnl, W.all.pct == null ? '' : ` (${W.all.pct} %/$)`)}
     <div class="kpi"><b>${W.h1.orders ? W.h1.refusedPct + ' %' : '-'}</b><span>refus 1 h</span></div>
