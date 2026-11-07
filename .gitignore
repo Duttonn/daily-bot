@@ -25,3 +25,6 @@ node_modules/
 
 # LightGBM leg ledger (runtime)
 lgb-state.json
+
+# dashboard: on-chain samples of the market maker reserve (runtime)
+dashboard/reserve-history.jsonl

@@ -1,6 +1,6 @@
 // Minimal zero-dependency local server for Daily Up/Down dashboard with in-memory caching
 import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -47,6 +47,47 @@ async function pollVps() {
 // Initial poll + background loop every 3 seconds
 pollVps();
 setInterval(pollVps, 3000);
+
+// The market maker in front of all our fills is one vault (owner F9sT6b..., read on chain 2026-11-07). Its USDC is what
+// it can put against our bets; it fell 2774 -> 1927 in the 24 h to 2026-11-07 00:18 UTC. Read once a minute from the
+// public Solana RPC; samples kept in reserve-history.jsonl next to this file so the curve survives a restart.
+const SOLANA_RPC = process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const RESERVE_OWNER = process.env.RESERVE_OWNER || 'F9sT6bbtmT1bo7VA5eCbGe5QTiZ3AMW36ERH9DohGEj5';
+const RESERVE_LOW = +(process.env.RESERVE_LOW || 800);
+const RESERVE_FILE = process.env.RESERVE_FILE || path.join(__dirname, 'reserve-history.jsonl');
+const reserve = existsSync(RESERVE_FILE) ? readFileSync(RESERVE_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).sort((a, b) => a.t - b.t) : [];
+let reserveError = null;
+async function pollReserve() {
+  try {
+    const r = await fetch(SOLANA_RPC, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner', params: [RESERVE_OWNER, { mint: USDC_MINT }, { encoding: 'jsonParsed' }] }) });
+    const j = await r.json(); if (j.error) throw new Error(j.error.message);
+    const s = { t: Date.now(), usdc: +j.result.value.reduce((a, v) => a + (v.account.data.parsed.info.tokenAmount.uiAmount || 0), 0).toFixed(2) };
+    reserve.push(s); appendFileSync(RESERVE_FILE, JSON.stringify(s) + '\n'); reserveError = null;
+  } catch (err) { reserveError = err.message; console.error('[RESERVE ERROR]', err.message); }
+}
+pollReserve();
+setInterval(pollReserve, 60e3);
+
+// The reserve over the same buckets as the accounts (last sample at or before each bucket's end), its change over
+// 1 h / 6 h / 24 h / the window, and our refusals that name low liquidity or capacity rather than a moved price.
+function reserveView(d, from, now, n = 144) {
+  const ms = (now - from) / n, timeline = [];
+  let i = 0, v = null;
+  for (let k = 0; k < n; k++) { const end = from + (k + 1) * ms; while (i < reserve.length && reserve[i].t <= end) v = reserve[i++].usdc; timeline.push({ t: Math.round(from + k * ms), usdc: v }); }
+  const last = reserve.at(-1), before = (t) => { let x = null; for (const s of reserve) { if (s.t > t) break; x = s.usdc; } return x; };
+  const change = (t) => { const b = before(t); return last && b != null ? +(last.usdc - b).toFixed(2) : null; };
+  const low = (d.orders || []).filter((o) => o.t > now - 3600e3 && o.st === 'refused' && /USDC_LOW|VAULT|CAPACITY/i.test(o.code || ''));
+  const out = { now: last?.usdc ?? null, at: last?.t ?? null, low: RESERVE_LOW, owner: RESERVE_OWNER, from, to: now, timeline,
+    change: { h1: change(now - 3600e3), h6: change(now - 6 * 3600e3), h24: change(now - 24 * 3600e3), all: change(from) },
+    lowRefusals1h: low.length, alerts: [] };
+  const add = (code, level, text) => out.alerts.push({ key: `Réserve|${code}`, level, text: `Réserve en face : ${text}` });
+  if (last && last.usdc < RESERVE_LOW) add('low', 'warn', `${last.usdc} USDC, sous ${RESERVE_LOW}`);
+  if (!last || now - last.t > 5 * 60e3) add('stale', 'warn', `pas lue depuis ${last ? Math.round((now - last.t) / 60e3) + ' min' : 'le démarrage'}${reserveError ? ` (${reserveError})` : ''}`);
+  if (low.length) add('refusals', 'warn', `${low.length} refus pour liquidité ou capacité sur la dernière heure`);
+  return out;
+}
 
 // The page is euphoria-bot's dashboard/fleet.html (one panel per account, 6 h / 24 h / 72 h, click + drag for a period).
 // Here the bot and the LightGBM leg are its two accounts, in one wallet. Same fields as euphoria-bot lib/fleet.mjs
@@ -120,7 +161,9 @@ const server = createServer(async (req, res) => {
     if (!cachedPayload || Date.now() - lastFetchTime > 5000) await pollVps();
     const hours = Math.min(168, Math.max(1, +url.searchParams.get('hours') || 24));
     res.writeHead(cachedPayload ? 200 : 503, { 'Content-Type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-    return res.end(JSON.stringify(cachedPayload ? fleetView(cachedPayload, hours) : { error: 'pas encore de données du VPS' }));
+    const v = cachedPayload && fleetView(cachedPayload, hours);
+    if (v) v.reserve = reserveView(cachedPayload, v.at - hours * 3600e3, v.at);
+    return res.end(JSON.stringify(v || { error: 'pas encore de données du VPS' }));
   }
 
   if (url.pathname === '/api/trades') {

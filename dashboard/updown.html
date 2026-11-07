@@ -262,6 +262,29 @@ function totalCard(bots) {
 </section>`;
 }
 
+// The market maker's reserve in front of our fills (on chain, read once a minute by the server): its USDC over the same
+// buckets as the accounts, with the low threshold dashed. Not an account: kept out of the totals.
+function reserveCard(r) {
+  const T = r.timeline, seen = T.map((x) => x.usdc).filter((x) => x != null), n = T.length;
+  const lo = Math.min(r.low, ...seen), hi = Math.max(r.low, ...seen), y = (v) => (hi === lo ? 32 : 60 - (v - lo) / (hi - lo) * 56);
+  const pts = T.map((x, k) => (x.usdc == null ? '' : `${((k + 1) / n * 1000).toFixed(1)},${y(x.usdc).toFixed(1)}`)).filter(Boolean).join(' ');
+  const k = (label, v) => `<div class="kpi"><b class="${cls(v)}">${usd(v)}</b><span>${label}</span></div>`;
+  return `<section data-k="Réserve" ${panelAttrs('Réserve')}>
+  <div class="row"><h2><i class="mv" title="tirer pour déplacer · double-clic : disposition par défaut">⠿</i><i class="sw" style="background:#888"></i>Réserve en face</h2>
+    <span class="badge ${r.now != null && r.now < r.low ? 'paused' : 'ok'}">${r.now == null ? 'pas encore lue' : r.now < r.low ? `sous ${r.low}` : 'ok'}</span><span class="grow"></span>
+    <div class="kpi"><b>${r.now == null ? '-' : r.now.toFixed(2) + ' $'}</b><span>USDC du teneur de marché</span></div>
+    ${k('1 h', r.change.h1)}${k('6 h', r.change.h6)}${k('24 h', r.change.h24)}${k(`${H} h`, r.change.all)}
+    <div class="kpi"><b>${r.lowRefusals1h}</b><span>refus liquidité 1 h</span></div>
+  </div>
+  <div class="chart">
+    <span>USDC</span><svg class="curve plot" viewBox="0 0 1000 64" preserveAspectRatio="none"><line class="zero" x1="0" x2="1000" y1="${y(r.low).toFixed(1)}" y2="${y(r.low).toFixed(1)}" stroke-dasharray="6 4"/><polyline fill="none" stroke="#888" stroke-width="1.5" points="${pts}"/>${cursor(64)}</svg>
+    <span></span><div class="axis">${[0, 0.25, 0.5, 0.75, 1].map((f) => `<span>${esc(hm(r.from + (V[0] + f * (V[1] - V[0])) / 1000 * (r.to - r.from)))}</span>`).join('')}</div>
+  </div>
+  <small>compte ${esc(r.owner.slice(0, 6))}… sur Solana · lu chaque minute${r.at ? ` · dernière lecture ${esc(hm(r.at))}` : ''} · pointillés : ${r.low} USDC</small>
+  <i class="grip" title="tirer pour agrandir (reste centré) · double-clic : taille normale"></i>
+</section>`;
+}
+
 // Balance gauge (05/10 user): 0 % = the floor, 100 % = the automatic withdrawal; each part takes the colour of the base
 // stake per decision at that balance (same colours as the "mise" strip), solid up to the balance, faint above it.
 function fillBar(b, i) {
@@ -285,13 +308,13 @@ function render() {
   $('#t6l').textContent = `P&L 6 h${pct(sum((b) => b.windows.h6.pnl), sum((b) => b.windows.h6.staked))}`;
   $('#fills').innerHTML = B.map(fillBar).join('');
   $('#talll').textContent = `P&L ${H} h${pct(sum((b) => b.windows.all.pnl), sum((b) => b.windows.all.staked))}`;
-  const al = B.flatMap((b) => b.alerts ?? (b.error ? [{ key: `${b.name}|error`, level: 'bad', text: `${b.name}: ${b.error}` }] : []));
+  const al = B.flatMap((b) => b.alerts ?? (b.error ? [{ key: `${b.name}|error`, level: 'bad', text: `${b.name}: ${b.error}` }] : [])).concat(data.reserve?.alerts ?? []);
   $('#alerts').innerHTML = al.map((a) => `<div class="alert ${a.level}">${esc(a.text)}</div>`).join('');
   document.title = (al.length ? `(${al.length}) ` : '') + 'Daily.fun - comptes';
   if (known && window.Notification?.permission === 'granted') for (const a of al) if (!known.has(a.key)) { try { new Notification('Daily.fun', { body: a.text, tag: a.key }); } catch {} }
   known = new Set(al.map((a) => a.key));
   const totHtml = data.bots.length > 1 ? totalCard(B) : '';
-  $('#bots').innerHTML = (totHtml || '') + B.map(card).join('');
+  $('#bots').innerHTML = (totHtml || '') + B.map(card).join('') + (data.reserve ? reserveCard(data.reserve) : '');
   for (const s of document.querySelectorAll('svg.plot')) s.setAttribute('viewBox', `${V[0].toFixed(2)} 0 ${(V[1] - V[0]).toFixed(2)} ${s.viewBox.baseVal.height}`);
   $('#zm').textContent = V[1] - V[0] < 999 ? `zoom x${(1000 / (V[1] - V[0])).toFixed(1)} · double-clic pour revenir` : '';
   place();
