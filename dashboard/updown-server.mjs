@@ -123,7 +123,7 @@ function fleetView(d, hours, now = Date.now(), n = 144) {
   const bot = view('bot', 'Bot', {
     state: silent ? 'stopped' : !hb.authed ? 'paused' : s == null ? 'warming-up' : s >= cfg.calmVolThreshold ? 'paused' : 'running',
     // One pool since 047e5b8: both stake a fraction of the whole wallet and share the wallet's trailing floor.
-    balance: hb.bot ?? hb.usdc, floor: F, sizing: { clicks: 1, stake: r2(hb.usdc * cfg.sizingFraction) },
+    balance: hb.bot ?? hb.usdc, floor: F, sizing: { clicks: 1, stake: r2(Math.min(hb.usdc * cfg.sizingFraction, cfg.maxStakeUsd ?? Infinity)) },
     flag: hb.authed ? 'ok' : 'blocked', flagWhy: hb.authed ? 'authentifié sur la plateforme' : 'non authentifié',
     note: `VPS ~/daily-bot · σ ${s == null ? '-' : s.toFixed(2)} (pas d'entrée si ≥ ${cfg.calmVolThreshold}) · pic ${d.peak} $ · plateforme ${vc.sides && Math.abs(vc.ours - vc.venue) < 0.05 ? 'concorde' : `écart ${r2((vc.ours ?? 0) - (vc.venue ?? 0))} $`}`,
     alertList: [
@@ -137,9 +137,9 @@ function fleetView(d, hours, now = Date.now(), n = 144) {
   const lo = (d.orders || []).filter((o) => o.owner === 'lgb' && o.t > now - 3600e3), lr = lo.filter((o) => o.st === 'refused').length;
   const lgb = view('lgb', 'LightGBM', {
     state: leg.halted ? 'stopped' : now < (leg.trader?.warmFrom ?? 0) * 1000 ? 'warming-up' : 'running',
-    balance: leg.cash, floor: F, sizing: { clicks: 1, stake: r2(hb.usdc * cfg.legCapFrac) },
+    balance: leg.cash, floor: F, sizing: { clicks: 1, stake: r2(Math.min(hb.usdc * cfg.legCapFrac, cfg.maxStakeUsd ?? Infinity)) },
     flag: leg.halted ? 'blocked' : 'ok', flagWhy: leg.halted ? `achats arrêtés : wallet sous le plancher ${F} $` : 'les ordres partent',
-    note: `même wallet, P&L compté à part · ${Math.round(cfg.legCapFrac * 100)} % du wallet par round · ${(leg.open || []).length} position(s) ouverte(s) · trader : ${leg.trader?.sent ?? 0} ordres envoyés`,
+    note: `même wallet, P&L compté à part · ${Math.round(cfg.legCapFrac * 100)} % du wallet par round${cfg.maxStakeUsd ? `, ${cfg.maxStakeUsd} $ au plus` : ''} · ${(leg.open || []).length} position(s) ouverte(s) · trader : ${leg.trader?.sent ?? 0} ordres envoyés`,
     alertList: [
       leg.halted && ['halted', 'bad', `achats arrêtés, wallet sous le plancher ${F} $`],
       lo.length >= 4 && lr / lo.length > 0.5 && ['refused', 'warn', `${lr} de ses ${lo.length} ordres de la dernière heure refusés par la plateforme`],

@@ -105,6 +105,7 @@ const config = Object.fromEntries(['windowRemainingMin', 'windowRemainingMax', '
 config.sizingFraction = cfgNum('sizingFraction', /sizingFraction:\s*Math\.min\(([\d.]+)/);
 config.legCapFrac = cfgNum('capFrac', /capFrac:\s*([\d.]+)/);
 config.legHaltBelow = cfgNum('haltBelow', /haltBelow:\s*([\d.]+)/);
+config.maxStakeUsd = cfgNum('maxStakeUsd');
 
 // LightGBM leg: ledger, trader journal, paper trader
 const state = readJson(path.join(__dirname, 'bot-state.json')) || {};

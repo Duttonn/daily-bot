@@ -150,7 +150,7 @@ globalThis.fetch = async (url, opts) => {
     json = { tradingSession: { vault: key, session: key, cashSession: { enabled: true, nextNonce: '5', programId: key, deploymentDomain: '00'.repeat(32),
       vault: key, session: key, sessionGeneration: '1', adapterProgram: key, destination: key } } };
   } else if (body.method === 'getTokenAccountBalance') {
-    json = { result: { value: { uiAmount: 400 } } };
+    json = { result: { value: { uiAmount: +(process.env.FAKE_USDC || 400) } } };
   } else if (String(url).includes('/daily-markets/MID1')) { // the venue's verdict: Up won
     json = { market: { state: 'resolved', payoutVector: ['1000000', '0'] } };
   }
@@ -251,6 +251,7 @@ const [legBuy, legSettle, legShared, legHalt, legReject, legCollide, legOrphan, 
   runScenario(rawBot, 'lgb_stale', 6000, staleBot, {}, { 'lgb-state.json': collideLeg }, { port: 47315, replyPort: 47316, intents: [] }),
 ]);
 // one pool: the wallet (400) at or under the floor (0.65 x 700 = 455) blocks the leg's buys as well as the bot's
+const legBig = await runScenario(rawBot, 'lgb_buy', 5000, peak400, { FAKE_USDC: '2000' }, {}, { port: 47321, replyPort: 47322, intents: [legOrders[0]] });
 const legFloor = await runScenario(rawBot, 'lgb_floor', 5000, { tradedRounds: [], activePositions: [], peakBalance: 700 }, {}, {}, { port: 47317, replyPort: 47318, intents: [legOrders[0]] });
 // the session stub always shows nextNonce 5, as the real API did right after a processed buy: the add must sign 6, not 5 again
 const legNonce = await runScenario(rawBot, 'lgb_nonce', 6000, peak400, {}, {}, { port: 47319, replyPort: 47320, intents: [
@@ -342,6 +343,7 @@ s = sells(legShared);
 check(`leg shared side: the venue shows 11, the bot's stop sells its own ${Number(s[0]?.maxShares) / 1e6} shares`, s.length >= 1 && s[0].maxShares === '6000000' && !legShared.out.includes('-> 11'));
 check('leg shared side: the leg keeps its 5 shares', legShared.lgbState?.pos?.[FAKE_PDA + ':1']?.shares === 5 && legShared.out.includes('[CASHOUT FILLED]'));
 check('leg low cash: no 50 USD halt, a leg ledger at 49 USD still buys on the wallet', rep(legHalt, 'k1').st === 'filled' && legHalt.lgbState?.halted === false && legHalt.frames.length === 1);
+check(`leg cap: wallet 2000, 5 % would be 100 USD, the entry is capped at 30 USD: ${Number(legBig.frames[0]?.maxShares) / 1e6} shares at 0.53 (54 x 0.547437 = 29.56)`, legBig.frames[0]?.side === 'buy' && legBig.frames[0].maxShares === '54000000' && legBig.out.includes('and 30 USD per round'));
 check(`leg floor: wallet 400 under the floor 455, the leg buy is dropped (${rep(legFloor, 'k1').why}) and nothing is sent`, rep(legFloor, 'k1').why === 'floor' && legFloor.frames.length === 0);
 check('leg reject: a venue rejection is answered and books nothing', rep(legReject, 'k1').st === 'rejected' && near(legReject.lgbState?.cash, 100) && legPos(legReject) === 0);
 s = sells(legCollide);

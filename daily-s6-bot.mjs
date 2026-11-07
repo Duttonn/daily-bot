@@ -138,6 +138,7 @@ const CONFIG = {
 
   // Capital Preservation Sizing
   sizingFraction: Math.min(0.05, parseFloat(process.env.SIZING_FRACTION) > 0 ? parseFloat(process.env.SIZING_FRACTION) : 0.05), // 5 % of the balance, capped: a higher stake needs a code change
+  maxStakeUsd: 30,             // at most 30 USD per position, fees included, for the bot and the leg alike (owner 2026-11-07: the stake stops growing with the wallet)
   maxSharesSafetyCap: 1000,    // Safety ceiling to absorb Level 1 + Level 2 liquidity depth
   trailingFloorDrawdown: 0.35, // New entries stop once the free balance is 35% below its peak (7-day p95 drawdown 24-32%)
   minBalanceFloorMinUsd: 5.0   // Absolute minimum floor to allow small wallets to trade
@@ -208,7 +209,7 @@ console.log('  Z-Score Filter: ', `Z >= ${CONFIG.minZScore}`);
 console.log('  Edge Margin:    ', `edge >= +${(CONFIG.minEdgeMargin * 100).toFixed(1)}% net`);
 console.log('  Max Entry Ask:  ', `<=${CONFIG.maxEntryAsk}$`);
 console.log('  Stop Loss Cut:  ', `q_surv <= ${(CONFIG.stopLossMaxQ * 100).toFixed(0)}% or d <= -${CONFIG.stopLossMaxAdverseUsd}$ [${CONFIG.stopLossMinTau}s-${CONFIG.stopLossMaxTau}s]`);
-console.log('  Capital Sizing: ', `${(CONFIG.sizingFraction * 100)}% of the balance, fixed`);
+console.log('  Capital Sizing: ', `${(CONFIG.sizingFraction * 100)}% of the balance, at most ${CONFIG.maxStakeUsd} USD per position`);
 if (process.env.SIZING_FRACTION && parseFloat(process.env.SIZING_FRACTION) !== CONFIG.sizingFraction) {
   console.warn(`[CONFIG WARNING] SIZING_FRACTION=${process.env.SIZING_FRACTION} ignored, using ${CONFIG.sizingFraction}`);
 }
@@ -655,7 +656,7 @@ if (LGB_PORT) {
   lgbSock.on('message', (buf) => { let o; try { o = JSON.parse(buf); } catch { return; } lgbOrder(o); });
   lgbSock.on('error', (e) => console.error(new Date().toISOString(), '[LGB] socket', e.message));
   lgbSock.bind(LGB_PORT, '127.0.0.1');
-  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of the wallet per round, buys stop at the wallet floor${lgb.halted ? ' (HALTED)' : ''}`);
+  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of the wallet and ${CONFIG.maxStakeUsd} USD per round, buys stop at the wallet floor${lgb.halted ? ' (HALTED)' : ''}`);
 }
 
 async function lgbOrder(o) {
@@ -674,7 +675,7 @@ async function lgbOrder(o) {
   if (buy) {
     const wallet = currentUsdcBalance;
     if (!(wallet > balanceFloor())) return drop('floor');
-    const cap = (lgb.cap[o.slug] ??= LGB.capFrac * wallet); // fixed at the round's first leg buy, as the backtest's 5 % cap
+    const cap = (lgb.cap[o.slug] ??= Math.min(LGB.capFrac * wallet, CONFIG.maxStakeUsd)); // fixed at the round's first leg buy: the backtest's 5 % cap, at most maxStakeUsd
     const room = Math.min(cap - (lgb.spent[o.slug] || 0), wallet - balanceFloor() - 0.5);
     shares = Math.min(Math.floor(Number(o.target) || 0), Math.floor(room / (o.limit + fee(o.limit, feeBps))));
     if (!(shares >= 1) || shares * o.limit < 1) return drop(`room ${room.toFixed(2)} USD`); // the venue's 1 USD minimum
@@ -1391,7 +1392,7 @@ async function executeTrade(params) {
   const balance = currentUsdcBalance; // one pool: the whole wallet
   const dynamicFloor = balanceFloor();
   const maxSafeSpend = Math.max(0, balance - dynamicFloor - 0.5);
-  let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, maxSafeSpend);
+  let baseTargetSpend = Math.min(balance * CONFIG.sizingFraction, CONFIG.maxStakeUsd, maxSafeSpend);
 
   // Fixed 1.0x sizing: no leverage on edge
   const edgeMultiplier = 1.0;
