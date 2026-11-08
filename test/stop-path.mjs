@@ -360,7 +360,7 @@ s = sells(legShared);
 check(`leg shared side: the venue shows 11, the bot's stop sells its own ${Number(s[0]?.maxShares) / 1e6} shares`, s.length >= 1 && s[0].maxShares === '6000000' && !legShared.out.includes('-> 11'));
 check('leg shared side: the leg keeps its 5 shares', legShared.lgbState?.pos?.[FAKE_PDA + ':1']?.shares === 5 && legShared.out.includes('[CASHOUT FILLED]'));
 check('leg low cash: no 50 USD halt, a leg ledger at 49 USD still buys on the wallet', rep(legHalt, 'k1').st === 'filled' && legHalt.lgbState?.halted === false && legHalt.frames.length === 1);
-check(`leg cap: wallet 2000, 5 % would be 100 USD, the entry is capped at 30 USD: ${Number(legBig.frames[0]?.maxShares) / 1e6} shares at 0.53 (54 x 0.547437 = 29.56)`, legBig.frames[0]?.side === 'buy' && legBig.frames[0].maxShares === '54000000' && legBig.out.includes('and 30 USD per round'));
+check(`leg cap: wallet 2000, 5 % would be 100 USD, the entry is capped at 60 USD: ${Number(legBig.frames[0]?.maxShares) / 1e6} shares at 0.53 (109 x 0.547437 = 59.67)`, legBig.frames[0]?.side === 'buy' && legBig.frames[0].maxShares === '109000000' && legBig.out.includes('and 60 USD per round'));
 check(`leg floor: wallet 400 under the floor 455, the leg buy is dropped (${rep(legFloor, 'k1').why}) and nothing is sent`, rep(legFloor, 'k1').why === 'floor' && legFloor.frames.length === 0);
 check('leg reject: a venue rejection is answered and books nothing', rep(legReject, 'k1').st === 'rejected' && near(legReject.lgbState?.cash, 100) && legPos(legReject) === 0);
 s = sells(legCollide);

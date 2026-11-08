@@ -138,7 +138,8 @@ const CONFIG = {
 
   // Capital Preservation Sizing
   sizingFraction: Math.min(0.05, parseFloat(process.env.SIZING_FRACTION) > 0 ? parseFloat(process.env.SIZING_FRACTION) : 0.05), // 5 % of the balance, capped: a higher stake needs a code change
-  maxStakeUsd: 30,             // at most 30 USD per position, fees included, for the bot and the leg alike (owner 2026-11-07: the stake stops growing with the wallet)
+  maxStakeUsd: 30,             // at most 30 USD per position, fees included, for the bot (owner 2026-11-07: the stake stops growing with the wallet)
+  lgbMaxStakeUsd: 60,          // the leg's round cap (owner's O8, 2026-11-08): it buys only while sigmaM >= lgbMinSigma, where its edge was
   // leg buys only while sigmaM >= this (owner's O2, 2026-11-08): 11-06..11-08 the leg made -99 USD under 2 (all on 11-07) and +375 above,
   // the bot +800 under 2. Threshold chosen on those same days. LGB_MIN_SIGMA overrides it (the harness sets 0 = off); sells are never gated.
   lgbMinSigma: Number(process.env.LGB_MIN_SIGMA ?? 2),
@@ -691,7 +692,7 @@ if (LGB_PORT) {
   lgbSock.on('message', (buf) => { let o; try { o = JSON.parse(buf); } catch { return; } lgbOrder(o); });
   lgbSock.on('error', (e) => console.error(new Date().toISOString(), '[LGB] socket', e.message));
   lgbSock.bind(LGB_PORT, '127.0.0.1');
-  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of the wallet and ${CONFIG.maxStakeUsd} USD per round, buys stop at the wallet floor${CONFIG.lgbMinSigma > 0 ? ` and while sigmaM < ${CONFIG.lgbMinSigma}` : ''}${lgb.halted ? ' (HALTED)' : ''}`);
+  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of the wallet and ${CONFIG.lgbMaxStakeUsd} USD per round, buys stop at the wallet floor${CONFIG.lgbMinSigma > 0 ? ` and while sigmaM < ${CONFIG.lgbMinSigma}` : ''}${lgb.halted ? ' (HALTED)' : ''}`);
 }
 
 async function lgbOrder(o) {
@@ -713,7 +714,7 @@ async function lgbOrder(o) {
     if (dayCapReached()) return drop('day cap');
     const sig = calculateRealizedVol(priceHistory, 600, 500); // the heartbeat's sigmaM
     if (CONFIG.lgbMinSigma > 0 && !(sig >= CONFIG.lgbMinSigma)) return drop(`calm sigmaM ${sig?.toFixed(2) ?? 'warmup'} < ${CONFIG.lgbMinSigma}`);
-    const cap = (lgb.cap[o.slug] ??= Math.min(LGB.capFrac * wallet, CONFIG.maxStakeUsd)); // fixed at the round's first leg buy: the backtest's 5 % cap, at most maxStakeUsd
+    const cap = (lgb.cap[o.slug] ??= Math.min(LGB.capFrac * wallet, CONFIG.lgbMaxStakeUsd)); // fixed at the round's first leg buy: the backtest's 5 % cap, at most lgbMaxStakeUsd
     const room = Math.min(cap - (lgb.spent[o.slug] || 0), wallet - balanceFloor() - 0.5);
     shares = Math.min(Math.floor(Number(o.target) || 0), Math.floor(room / (o.limit + fee(o.limit, feeBps))));
     if (!(shares >= 1) || shares * o.limit < 1) return drop(`room ${room.toFixed(2)} USD`); // the venue's 1 USD minimum
