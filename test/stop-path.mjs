@@ -306,7 +306,7 @@ check('buy_rejected: no position kept', rejected.out.includes('[BUY REJECTED]') 
 s = sells(sellRej);
 check('sell_rejected: retried after the rejection', s.length === 2);
 check(`sell_rejected: retry ${s[1]?.t - s[0]?.t} ms after the first sale, 0.25-0.8 s`, s.length === 2 && s[1].t - s[0].t >= 250 && s[1].t - s[0].t <= 800);
-check(`sell_rejected: first limit ${s[0]?.limit} is the bid minus 5 c`, s.length === 2 && Number(s[0].limit) === 450000);
+check(`sell_rejected: first limit ${s[0]?.limit} is the bid minus 15 c`, s.length === 2 && Number(s[0].limit) === 350000);
 check('sell_rejected: position closed after the retry', openCount(sellRej) === 0 && sellRej.out.includes('[CASHOUT FILLED]'));
 
 s = sells(noProc);

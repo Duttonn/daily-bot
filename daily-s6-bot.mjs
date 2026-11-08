@@ -1653,7 +1653,9 @@ async function executeCashOut(params) {
     
     // Selling on Daily.fun taker order
     const failedAttempts = Math.max(0, (params.pos?.cashoutAttempts || 1) - 1);
-    const limitPriceToUse = Math.max(0.05, bestBid - 0.05 - 0.02 * failedAttempts); // 5 c into the bid, 2 c more per failed attempt: the sale fills at the book, the limit only lets a moving bid through
+    // 15 c into the bid, 2 c more per failed attempt: the sale fills at the book, the limit only lets a moving bid through. Owner's G6
+    // (2026-11-09): at 5 c, 21 of 101 first sales were refused and the retry 0.68 s later sold lower, 38.9 USD over 17 chains in 2.54 days.
+    const limitPriceToUse = Math.max(0.05, bestBid - 0.15 - 0.02 * failedAttempts);
     const limitPriceMicros = BigInt(Math.round(limitPriceToUse * 1_000_000));
     const sharesMicros = BigInt(Math.round(params.sharesToSell * 1_000_000));
     // The site signs sells with the u64 maximum: a real value caps the proceeds and truncates the fill.
