@@ -85,15 +85,18 @@ async function resolveLoop() {
 }
 
 // ---- Daily websocket: Origin header required; only the public channels (no auth) ----
-let pingAt = 0;
+// DAILY_WS overrides the URL, for the offline test only.
+const WS_URL = process.env.DAILY_WS || 'wss://ws.daily.fun/ws';
+let pingAt = 0, wsLast = 0, bookLast = 0;
 function connect() {
-  let last = Date.now(); ws = new WebSocket('wss://ws.daily.fun/ws', { headers: { Origin: 'https://daily.fun' } }); bookKey = '';
-  ws.onopen = () => { console.log(new Date().toISOString(), 'daily open'); ws.send(JSON.stringify({ type: 'updown_subscribe' })); wantBooks(); };
-  ws.onmessage = (ev) => {
-    last = Date.now(); bytes += ev.data.length; let o; try { o = JSON.parse(ev.data); } catch (e) { return; }
+  const s = new WebSocket(WS_URL, { headers: { Origin: 'https://daily.fun' } }); ws = s; bookKey = ''; wsLast = bookLast = Date.now();
+  s.onopen = () => { if (s !== ws) { try { s.close(); } catch (e) {} return; } console.log(new Date().toISOString(), 'daily open'); s.send(JSON.stringify({ type: 'updown_subscribe' })); wantBooks(); };
+  s.onmessage = (ev) => {
+    if (s !== ws) return;
+    wsLast = Date.now(); bytes += ev.data.length; let o; try { o = JSON.parse(ev.data); } catch (e) { return; }
     switch (o.type) {
       case 'updown_markets': for (const x of o.markets || []) { for (const oc of x.outcomes || []) if (oc.book) wb('m', oc.book); seeMarket(x); } wantBooks(); break;
-      case 'updown_book': wb('b', o); onBook(o, true); break;
+      case 'updown_book': bookLast = Date.now(); wb('b', o); onBook(o, true); break;
       case 'pong': if (pingAt) w('pg', Date.now() - pingAt); pingAt = 0; break;
       case 'updown_pyth': if (o.symbol === 'BTC' || [...mkts.values()].some((m) => m.sym === o.symbol)) w('py', [o.symbol, o.v, o.sourceT ?? o.t, o.seq].join(',')); break;
       case 'updown_spot': w('sp', [o.symbol, o.v, o.t].join(',')); break;
@@ -101,15 +104,26 @@ function connect() {
       case 'error':
         console.log(new Date().toISOString(), 'daily error', o.code, o.message);
         // The venue drops the fast updown_book channel on this error and leaves only 2 s books in updown_markets: reconnect, like the bot.
-        if (o.code === 'subscription_limit') { try { ws.close(); } catch (e) {} }
+        if (o.code === 'subscription_limit') { try { s.close(); } catch (e) {} }
         break;
       default: break;
     }
   };
-  ws.onclose = () => { console.log(new Date().toISOString(), 'daily closed'); clearInterval(watch); setTimeout(connect, 3000); };
-  ws.onerror = () => {};
-  const watch = setInterval(() => { if (ws.readyState === 1) { pingAt = Date.now(); ws.send(JSON.stringify({ type: 'ping' })); } if (Date.now() - last > 60000) { last = Date.now(); try { ws.close(); } catch (e) {} } }, 20000);
+  s.onclose = () => { if (s !== ws) return; console.log(new Date().toISOString(), 'daily closed'); ws = null; setTimeout(connect, 3000); };
+  s.onerror = () => {};
 }
+// One watchdog for whichever socket is current, which never waits for a close event: on 11-08 at 02:44:07 the log says 'daily closed',
+// then no 'daily open' for 15 h (the reconnect never opened and never closed), and on 11-07 02:00-05:00 updown_book stopped while
+// Pyth kept coming on the same socket. Silent for 60 s, or no book for 60 s once books are subscribed: drop the socket, connect again.
+setInterval(() => {
+  if (!ws) return; // closed normally, its reconnect is already scheduled
+  if (ws.readyState === 1) { pingAt = Date.now(); ws.send(JSON.stringify({ type: 'ping' })); }
+  const now = Date.now(), why = now - wsLast > 60000 ? 'silent' : bookKey && now - bookLast > 60000 ? 'no book' : null;
+  if (!why) return;
+  console.log(new Date().toISOString(), 'daily stale', why, 'state', ws.readyState, 'reconnect');
+  const s = ws; ws = null; try { s.close(); } catch (e) {}
+  connect();
+}, 20000);
 
 // ---- Binance spot bookTicker, same source as rec.mjs ----
 function sock(name, url, onMsg) {
