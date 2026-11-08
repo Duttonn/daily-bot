@@ -173,7 +173,7 @@ function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFile
   fs.writeFileSync(path.join(dir, 'bot.mjs'), botSource);
   const env = { PATH: process.env.PATH, SCENARIO: scenario, STOP_PROBE_SHARES: '6', OWNER_ADDRESS: '11111111111111111111111111111111',
     SESSION_SECRET_KEY: JSON.stringify(Array(64).fill(7)), PRIVY_TOKEN: 'x', PRIVY_REFRESH_TOKEN: 'x', ENV_FILE: path.join(dir, 'none'), AUTH_FILE: path.join(dir, 'none'),
-    ...(lgb ? { LGB_PORT: String(lgb.port), LGB_REPLY_PORT: String(lgb.replyPort) } : {}), ...extraEnv };
+    ...(lgb ? { LGB_PORT: String(lgb.port), LGB_REPLY_PORT: String(lgb.replyPort), LGB_MIN_SIGMA: '0' } : {}), ...extraEnv }; // the O2 gate is off unless a scenario sets it
   const replies = [];
   const rsock = lgb ? dgram.createSocket('udp4') : null;
   if (rsock) { rsock.on('message', (b) => replies.push(JSON.parse(b))); rsock.bind(lgb.replyPort, '127.0.0.1'); }
@@ -263,6 +263,15 @@ const capFile = (cap) => ({ 'day-cap.json': JSON.stringify({ day: today, cap }) 
 const [legDayCap, legDayUnder] = await Promise.all([
   runScenario(rawBot, 'lgb_buy', 5000, dayFrom300, {}, capFile(50), { port: 47323, replyPort: 47324, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_buy', 5000, dayFrom300, {}, capFile(150), { port: 47325, replyPort: 47326, intents: [legOrders[0]] }),
+]);
+// O2 volatility gate: leg buys only while sigmaM >= LGB_MIN_SIGMA; a restored history gives a numeric sigmaM, none leaves it in warmup
+const hist = { 'price-history.json': savedTicks(2000) };
+const [legCalm, legMoving, legWarm, legSellCalm] = await Promise.all([
+  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9' }, hist, { port: 47327, replyPort: 47328, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '0.0001' }, hist, { port: 47329, replyPort: 47330, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '2' }, {}, { port: 47331, replyPort: 47332, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9' }, { 'lgb-state.json': sharedLeg },
+    { port: 47333, replyPort: 47334, intents: [{ at: 800, o: { k: 'k1', act: 'sell', side: 'down', limit: 0.48, shares: 5 } }] }),
 ]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
@@ -367,5 +376,10 @@ check(`day cap: +100 since the day's start against a cap of 50, the leg buy is d
 check('day cap: the stop is logged, latched in the state and shown in the heartbeat', legDayCap.out.includes('[DAY CAP]') && legDayCap.state?.dayStart?.hit === true && legDayCap.out.includes('day=100.00$/50.00$/CAPPED'));
 check('day cap: the same day under a cap of 150 still buys', rep(legDayUnder, 'k1').st === 'filled' && legDayUnder.state?.dayStart?.hit === false);
 check('day cap: without a saved day start, the first flat moment sets it to the wallet, 400, and no file means no cap', legBuy.state?.dayStart?.day === today && legBuy.state.dayStart.usdc === 400 && legBuy.out.includes('day=0.00$/nocap'));
+check(`O2: sigmaM under the minimum drops the leg buy (${rep(legCalm, 'k1').why})`, rep(legCalm, 'k1').st === 'dropped' && /^calm sigmaM \d/.test(rep(legCalm, 'k1').why));
+check(`O2: the same history over the minimum buys (${rep(legMoving, 'k1').st})`, rep(legMoving, 'k1').st === 'filled');
+check(`O2: no sigmaM yet (warmup) drops the buy at a minimum of 2 (${rep(legWarm, 'k1').why})`, rep(legWarm, 'k1').why === 'calm sigmaM warmup < 2');
+check(`O2: a leg sale is never gated (${rep(legSellCalm, 'k1').st} ${rep(legSellCalm, 'k1').why ?? ''})`, rep(legSellCalm, 'k1').st === 'filled');
+check('O2: the start line states the gate', legWarm.out.includes('and while sigmaM < 2') && !legBuy.out.includes('while sigmaM'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
