@@ -282,7 +282,9 @@ class Trader:
     def features(self, R, kk):
         c = R.c; t = c["t"][kk]; rs = R.rs; tau = rs + 300.0 - t
         sg = R.sig[kk]; sig = NAN if sg is None else sg
-        se = max(sig, self.prm["sigma_floor"]); sq = math.sqrt(max(tau, 1.0))
+        # owner's G4 (2026-11-09): seconds with sigma under calm_below are priced at sigma_floor_calm; NaN sigma keeps sigma_floor
+        calm = sig < self.prm.get("calm_below", 0.0)
+        se = max(sig, self.prm["sigma_floor_calm"] if calm else self.prm["sigma_floor"]); sq = math.sqrt(max(tau, 1.0))
         kt = bisect.bisect_right(self.tk_t, t) - 1; now = self.tk_bf[kt]
         F = {"tau": tau, "ds_bf": now - R.f0}
         for w in (2, 5, 15, 60):

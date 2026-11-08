@@ -8,7 +8,7 @@
   "m_sell": 0.02,
   "size": 200
  },
- "cfg_source": "engine alone (owner's O5, 2026-11-08): zero-tree model, so p = q; cfg, prm and stress of the A policy (9b56736d) unchanged",
+ "cfg_source": "engine alone (owner's O5, 2026-11-08): zero-tree model, so p = q; cfg, prm and stress of the A policy (9b56736d) unchanged, except prm sigma_floor_calm 1.0 under calm_below 2.0 (owner's G4, 2026-11-09)",
  "feats": [
   "tau",
   "ds_bf",
@@ -78,6 +78,8 @@
   "rng": null,
   "sell_fee": true,
   "sigma_floor": 2.2,
+  "sigma_floor_calm": 1.0,
+  "calm_below": 2.0,
   "slip": 0.02,
   "stake": 21.4,
   "stop": true,

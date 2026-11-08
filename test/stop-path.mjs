@@ -264,11 +264,12 @@ const [legDayCap, legDayUnder] = await Promise.all([
   runScenario(rawBot, 'lgb_buy', 5000, dayFrom300, {}, capFile(50), { port: 47323, replyPort: 47324, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_buy', 5000, dayFrom300, {}, capFile(150), { port: 47325, replyPort: 47326, intents: [legOrders[0]] }),
 ]);
-// O2 volatility gate: leg buys only while sigmaM >= LGB_MIN_SIGMA; a restored history gives a numeric sigmaM, none leaves it in warmup
+// G4 volatility caps: the leg's round cap is 60 USD while sigmaM >= LGB_MIN_SIGMA and 30 under it; a restored history gives a
+// numeric sigmaM, none leaves it in warmup. Wallet 2000 so 5 % (100 USD) does not bind.
 const hist = { 'price-history.json': savedTicks(2000) };
 const [legCalm, legMoving, legWarm, legSellCalm] = await Promise.all([
-  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9' }, hist, { port: 47327, replyPort: 47328, intents: [legOrders[0]] }),
-  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '0.0001' }, hist, { port: 47329, replyPort: 47330, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9', FAKE_USDC: '2000' }, hist, { port: 47327, replyPort: 47328, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '0.0001', FAKE_USDC: '2000' }, hist, { port: 47329, replyPort: 47330, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '2' }, {}, { port: 47331, replyPort: 47332, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9' }, { 'lgb-state.json': sharedLeg },
     { port: 47333, replyPort: 47334, intents: [{ at: 800, o: { k: 'k1', act: 'sell', side: 'down', limit: 0.48, shares: 5 } }] }),
@@ -376,10 +377,10 @@ check(`day cap: +100 since the day's start against a cap of 50, the leg buy is d
 check('day cap: the stop is logged, latched in the state and shown in the heartbeat', legDayCap.out.includes('[DAY CAP]') && legDayCap.state?.dayStart?.hit === true && legDayCap.out.includes('day=100.00$/50.00$/CAPPED'));
 check('day cap: the same day under a cap of 150 still buys', rep(legDayUnder, 'k1').st === 'filled' && legDayUnder.state?.dayStart?.hit === false);
 check('day cap: without a saved day start, the first flat moment sets it to the wallet, 400, and no file means no cap', legBuy.state?.dayStart?.day === today && legBuy.state.dayStart.usdc === 400 && legBuy.out.includes('day=0.00$/nocap'));
-check(`O2: sigmaM under the minimum drops the leg buy (${rep(legCalm, 'k1').why})`, rep(legCalm, 'k1').st === 'dropped' && /^calm sigmaM \d/.test(rep(legCalm, 'k1').why));
-check(`O2: the same history over the minimum buys (${rep(legMoving, 'k1').st})`, rep(legMoving, 'k1').st === 'filled');
-check(`O2: no sigmaM yet (warmup) drops the buy at a minimum of 2 (${rep(legWarm, 'k1').why})`, rep(legWarm, 'k1').why === 'calm sigmaM warmup < 2');
-check(`O2: a leg sale is never gated (${rep(legSellCalm, 'k1').st} ${rep(legSellCalm, 'k1').why ?? ''})`, rep(legSellCalm, 'k1').st === 'filled');
-check('O2: the start line states the gate', legWarm.out.includes('and while sigmaM < 2') && !legBuy.out.includes('while sigmaM'));
+check(`G4: sigmaM under the threshold buys at the 30 USD calm cap (${rep(legCalm, 'k1').st}, ${Number(legCalm.frames[0]?.maxShares) / 1e6} shares at 0.53, 54 x 0.547437 = 29.56)`, rep(legCalm, 'k1').st === 'filled' && legCalm.frames[0]?.maxShares === '54000000');
+check(`G4: the same history over the threshold buys at the 60 USD cap (${rep(legMoving, 'k1').st}, ${Number(legMoving.frames[0]?.maxShares) / 1e6} shares)`, rep(legMoving, 'k1').st === 'filled' && legMoving.frames[0]?.maxShares === '109000000');
+check(`G4: no sigmaM yet (warmup) drops the buy at a threshold of 2 (${rep(legWarm, 'k1').why})`, rep(legWarm, 'k1').why === 'sigmaM warmup');
+check(`G4: a leg sale is never gated (${rep(legSellCalm, 'k1').st} ${rep(legSellCalm, 'k1').why ?? ''})`, rep(legSellCalm, 'k1').st === 'filled');
+check('G4: the start line states both caps', legWarm.out.includes('and 60 USD per round (30 while sigmaM < 2)') && !legBuy.out.includes('while sigmaM'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);

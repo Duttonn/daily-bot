@@ -139,9 +139,12 @@ const CONFIG = {
   // Capital Preservation Sizing
   sizingFraction: Math.min(0.05, parseFloat(process.env.SIZING_FRACTION) > 0 ? parseFloat(process.env.SIZING_FRACTION) : 0.05), // 5 % of the balance, capped: a higher stake needs a code change
   maxStakeUsd: 30,             // at most 30 USD per position, fees included, for the bot (owner 2026-11-07: the stake stops growing with the wallet)
-  lgbMaxStakeUsd: 60,          // the leg's round cap (owner's O8, 2026-11-08): it buys only while sigmaM >= lgbMinSigma, where its edge was
-  // leg buys only while sigmaM >= this (owner's O2, 2026-11-08): 11-06..11-08 the leg made -99 USD under 2 (all on 11-07) and +375 above,
-  // the bot +800 under 2. Threshold chosen on those same days. LGB_MIN_SIGMA overrides it (the harness sets 0 = off); sells are never gated.
+  lgbMaxStakeUsd: 60,          // the leg's round cap while sigmaM >= lgbMinSigma (owner's O8, 2026-11-08), where its edge was
+  lgbCalmStakeUsd: 30,         // the leg's round cap while sigmaM < lgbMinSigma (owner's G4, 2026-11-09): the trader prices calm seconds at a
+                               // sigma floor of 1.0 (policy sigma_floor_calm); held out on 11-05..11-08 that added +221 USD/day for bot + leg at
+                               // 60 USD after the 0.4 haircut, 3/4 of it on 11-07. 30 halves the extra flow into the vault (not simulated at 30).
+  // sigmaM threshold between the two caps (owner's O2 then G4). No sigmaM yet (warmup) drops the buy. LGB_MIN_SIGMA overrides it
+  // (the harness sets 0 = always the 60 USD cap, no warmup drop); sells are never gated.
   lgbMinSigma: Number(process.env.LGB_MIN_SIGMA ?? 2),
   maxSharesSafetyCap: 1000,    // Safety ceiling to absorb Level 1 + Level 2 liquidity depth
   trailingFloorDrawdown: 0.35, // New entries stop once the free balance is 35% below its peak (7-day p95 drawdown 24-32%)
@@ -692,7 +695,7 @@ if (LGB_PORT) {
   lgbSock.on('message', (buf) => { let o; try { o = JSON.parse(buf); } catch { return; } lgbOrder(o); });
   lgbSock.on('error', (e) => console.error(new Date().toISOString(), '[LGB] socket', e.message));
   lgbSock.bind(LGB_PORT, '127.0.0.1');
-  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of the wallet and ${CONFIG.lgbMaxStakeUsd} USD per round, buys stop at the wallet floor${CONFIG.lgbMinSigma > 0 ? ` and while sigmaM < ${CONFIG.lgbMinSigma}` : ''}${lgb.halted ? ' (HALTED)' : ''}`);
+  console.log(new Date().toISOString(), `[LGB] leg on udp ${LGB_PORT}, answers to ${LGB.replyPort}: cash ${lgb.cash.toFixed(2)} USD, ${Object.keys(lgb.pos).length} positions, at most ${LGB.capFrac * 100} % of the wallet and ${CONFIG.lgbMaxStakeUsd} USD per round${CONFIG.lgbMinSigma > 0 ? ` (${CONFIG.lgbCalmStakeUsd} while sigmaM < ${CONFIG.lgbMinSigma})` : ''}, buys stop at the wallet floor${lgb.halted ? ' (HALTED)' : ''}`);
 }
 
 async function lgbOrder(o) {
@@ -713,8 +716,9 @@ async function lgbOrder(o) {
     if (!(wallet > balanceFloor())) return drop('floor');
     if (dayCapReached()) return drop('day cap');
     const sig = calculateRealizedVol(priceHistory, 600, 500); // the heartbeat's sigmaM
-    if (CONFIG.lgbMinSigma > 0 && !(sig >= CONFIG.lgbMinSigma)) return drop(`calm sigmaM ${sig?.toFixed(2) ?? 'warmup'} < ${CONFIG.lgbMinSigma}`);
-    const cap = (lgb.cap[o.slug] ??= Math.min(LGB.capFrac * wallet, CONFIG.lgbMaxStakeUsd)); // fixed at the round's first leg buy: the backtest's 5 % cap, at most lgbMaxStakeUsd
+    if (CONFIG.lgbMinSigma > 0 && !Number.isFinite(sig)) return drop('sigmaM warmup');
+    const roundMax = !(CONFIG.lgbMinSigma > 0) || sig >= CONFIG.lgbMinSigma ? CONFIG.lgbMaxStakeUsd : CONFIG.lgbCalmStakeUsd;
+    const cap = (lgb.cap[o.slug] ??= Math.min(LGB.capFrac * wallet, roundMax)); // fixed at the round's first leg buy: the backtest's 5 % cap, at most 60 USD (30 while calm)
     const room = Math.min(cap - (lgb.spent[o.slug] || 0), wallet - balanceFloor() - 0.5);
     shares = Math.min(Math.floor(Number(o.target) || 0), Math.floor(room / (o.limit + fee(o.limit, feeBps))));
     if (!(shares >= 1) || shares * o.limit < 1) return drop(`room ${room.toFixed(2)} USD`); // the venue's 1 USD minimum
