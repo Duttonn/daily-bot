@@ -256,6 +256,14 @@ const legFloor = await runScenario(rawBot, 'lgb_floor', 5000, { tradedRounds: []
 // the session stub always shows nextNonce 5, as the real API did right after a processed buy: the add must sign 6, not 5 again
 const legNonce = await runScenario(rawBot, 'lgb_nonce', 6000, peak400, {}, {}, { port: 47319, replyPort: 47320, intents: [
   { at: 800, o: { k: 'k1', act: 'entry', side: 'up', limit: 0.53, target: 10, p: 0.7 } }, { at: 2500, o: { k: 'k2', act: 'add', side: 'up', limit: 0.53, target: 10 } }] });
+// daily gain cap: wallet 400, the day began at 300, so +100; a cap of 50 stops new entries, a cap of 150 does not
+const today = new Date().toISOString().slice(0, 10);
+const dayFrom300 = { ...peak400, dayStart: { day: today, usdc: 300, hit: false } };
+const capFile = (cap) => ({ 'day-cap.json': JSON.stringify({ day: today, cap }) });
+const [legDayCap, legDayUnder] = await Promise.all([
+  runScenario(rawBot, 'lgb_buy', 5000, dayFrom300, {}, capFile(50), { port: 47323, replyPort: 47324, intents: [legOrders[0]] }),
+  runScenario(rawBot, 'lgb_buy', 5000, dayFrom300, {}, capFile(150), { port: 47325, replyPort: 47326, intents: [legOrders[0]] }),
+]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
@@ -355,5 +363,9 @@ check('leg orphan: venue shares beyond the leg\'s own fills are not booked to th
 check(`leg nonce: after a processed buy the next buy signs the next nonce (${legNonce.frames.map((x) => x.nonce)}) though the session still shows 5`,
   legNonce.frames.length === 2 && legNonce.frames[0].nonce === '5' && legNonce.frames[1].nonce === '6' && rep(legNonce, 'k2').st === 'filled');
 check('nonce: the bot\'s own first buy signs the session\'s nonce, 5', partial.frames[0]?.nonce === '5');
+check(`day cap: +100 since the day's start against a cap of 50, the leg buy is dropped (${rep(legDayCap, 'k1').why}) and nothing is sent`, rep(legDayCap, 'k1').why === 'day cap' && legDayCap.frames.length === 0);
+check('day cap: the stop is logged, latched in the state and shown in the heartbeat', legDayCap.out.includes('[DAY CAP]') && legDayCap.state?.dayStart?.hit === true && legDayCap.out.includes('day=100.00$/50.00$/CAPPED'));
+check('day cap: the same day under a cap of 150 still buys', rep(legDayUnder, 'k1').st === 'filled' && legDayUnder.state?.dayStart?.hit === false);
+check('day cap: without a saved day start, the first flat moment sets it to the wallet, 400, and no file means no cap', legBuy.state?.dayStart?.day === today && legBuy.state.dayStart.usdc === 400 && legBuy.out.includes('day=0.00$/nocap'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);

@@ -28,3 +28,8 @@ lgb-state.json
 
 # dashboard: on-chain samples of the market maker reserve (runtime)
 dashboard/reserve-history.jsonl
+
+# daily gain cap: the vault's transactions and the day's cap (runtime, platform-day.mjs)
+platform-tx.jsonl
+day-cap.json*
+day-caps.jsonl

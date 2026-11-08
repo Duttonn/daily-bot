@@ -535,6 +535,36 @@ function balanceFloor() {
 }
 let vaultUsdcAta = CONFIG.dailyUsdcAta;
 
+// Daily gain cap (owner 2026-11-07): once the wallet has gained the day's cap since the UTC day began, new entries of the bot
+// and the leg stop until the next UTC day. platform-day.mjs writes the cap (half of what the platform made the day before) to
+// day-cap.json; no file, no cap. ponytail: the gain is the free balance against its value at the day's first flat moment, so
+// stakes still open count as spent (the cap can be passed by one round's stakes) and a deposit or withdrawal moves it.
+const DAYCAP_FILE = path.join(process.cwd(), 'day-cap.json');
+let dayStart = null; // { day, usdc, hit }, persisted in bot-state.json
+let dayCap = { readAt: 0, cap: null, day: null };
+function dayCapReached() {
+  const now = Date.now(), day = new Date(now).toISOString().slice(0, 10);
+  if (now - dayCap.readAt > 60000) {
+    try { const j = JSON.parse(fs.readFileSync(DAYCAP_FILE, 'utf8')); dayCap = { readAt: now, cap: Number.isFinite(j.cap) ? j.cap : null, day: j.day }; }
+    catch { dayCap = { readAt: now, cap: null, day: null }; }
+  }
+  if (dayStart?.day !== day && currentUsdcBalance !== null && !activePositions.size && !(lgb && (Object.keys(lgb.pos).length || Object.keys(lgb.orders).length))) {
+    dayStart = { day, usdc: currentUsdcBalance, hit: false };
+    saveBotState();
+  }
+  if (dayStart?.day !== day || dayCap.cap === null) return false;
+  if (!dayStart.hit && currentUsdcBalance - dayStart.usdc >= dayCap.cap) {
+    dayStart.hit = true;
+    saveBotState();
+    console.warn(new Date().toISOString(), `[DAY CAP] wallet +${(currentUsdcBalance - dayStart.usdc).toFixed(2)}$ since the day's start ${dayStart.usdc.toFixed(2)}$ >= cap ${dayCap.cap.toFixed(2)}$ (${dayCap.day}): new entries stop until 00:00 UTC`);
+  }
+  return dayStart.hit;
+}
+function dayCapNote() {
+  const day = new Date().toISOString().slice(0, 10);
+  return dayStart?.day === day ? ` day=${(currentUsdcBalance - dayStart.usdc).toFixed(2)}$/${dayCap.cap === null ? 'nocap' : dayCap.cap.toFixed(2) + '$'}${dayStart.hit ? '/CAPPED' : ''}` : '';
+}
+
 // Persistent State Management (D2 Fix)
 const STATE_FILE = path.join(process.cwd(), 'bot-state.json');
 
@@ -571,6 +601,7 @@ function saveBotState() {
       activePositions: serializedPositions,
       initialDetectedBalance,
       peakBalance,
+      dayStart,
       savedAt: Date.now()
     };
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -602,6 +633,7 @@ function loadBotState() {
         initialDetectedBalance = data.initialDetectedBalance;
       }
       if (data.peakBalance > 0) peakBalance = data.peakBalance;
+      if (data.dayStart?.day) dayStart = data.dayStart;
       if (process.env.RESET_PEAK === '1') { // after a withdrawal: the next balance read becomes the new peak
         console.warn(new Date().toISOString(), `[RESET_PEAK] peak ${peakBalance}$ discarded`);
         peakBalance = null;
@@ -675,6 +707,7 @@ async function lgbOrder(o) {
   if (buy) {
     const wallet = currentUsdcBalance;
     if (!(wallet > balanceFloor())) return drop('floor');
+    if (dayCapReached()) return drop('day cap');
     const cap = (lgb.cap[o.slug] ??= Math.min(LGB.capFrac * wallet, CONFIG.maxStakeUsd)); // fixed at the round's first leg buy: the backtest's 5 % cap, at most maxStakeUsd
     const room = Math.min(cap - (lgb.spent[o.slug] || 0), wallet - balanceFloor() - 0.5);
     shares = Math.min(Math.floor(Number(o.target) || 0), Math.floor(room / (o.limit + fee(o.limit, feeBps))));
@@ -1281,13 +1314,16 @@ function evaluateStrategy() {
     return;
   }
 
+  const dayCapped = dayCapReached(); // before the heartbeat, which shows it
   if (now - lastHeartbeat > 10000) {
     lastHeartbeat = now;
     const activeBtc = Array.from(markets.values()).filter(m => m.symbol === 'BTC' && m.endMs > now);
     const nextRounds = activeBtc.map(m => `${m.slug} (${((m.endMs - now)/1000).toFixed(0)}s left)`).join(', ');
     const leg = lgb ? ` bot=${botBal.toFixed(2)}$ lgb=${lgb.cash.toFixed(2)}$/${Object.keys(lgb.pos).length}pos${lgb.halted ? '/HALTED' : ''}` : '';
-    console.log(new Date().toISOString(), `[HEARTBEAT] bf=${currentBfPrice?.toFixed(1)} ticks=${priceHistory.length} sigmaM=${sigmaM ? sigmaM.toFixed(3) : 'warmup'} usdc=${currentUsdcBalance.toFixed(2)}$ floor=${dynamicFloor.toFixed(2)}$${leg} authed=${isDailyAuthed} | ${nextRounds}`);
+    console.log(new Date().toISOString(), `[HEARTBEAT] bf=${currentBfPrice?.toFixed(1)} ticks=${priceHistory.length} sigmaM=${sigmaM ? sigmaM.toFixed(3) : 'warmup'} usdc=${currentUsdcBalance.toFixed(2)}$ floor=${dynamicFloor.toFixed(2)}$${leg}${dayCapNote()} authed=${isDailyAuthed} | ${nextRounds}`);
   }
+
+  if (dayCapped) return; // daily gain cap reached: no new entry until 00:00 UTC, open positions are managed above
 
   if (!sigmaM || sigmaM >= CONFIG.calmVolThreshold) {
     return; // Volatility too high or warmup in progress for new entries
