@@ -8,7 +8,7 @@
   "m_sell": 0.02,
   "size": 200
  },
- "cfg_source": "v3plac.py real run, cap 5 % (ii): re-chosen on OOF train with the cap in force",
+ "cfg_source": "engine alone (owner's O5, 2026-11-08): zero-tree model, so p = q; cfg, prm and stress of the A policy (9b56736d) unchanged",
  "feats": [
   "tau",
   "ds_bf",
@@ -53,8 +53,8 @@
   "hour_cos"
  ],
  "gmax": 290,
- "model": "model.txt",
- "model_sha256": "c7fea90be4661a2788af6b80f365a280628f54534d6ab2987985b2f915ab0365",
+ "model": "model-q.txt",
+ "model_sha256": "1f978602ff4cd60db6db84c1e4a025fc520f5d88693985f1437910e365785822",
  "pool0": 100.0,
  "prm": {
   "book_age_max": 3000.0,
