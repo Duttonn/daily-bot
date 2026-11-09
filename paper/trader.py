@@ -28,6 +28,10 @@ import replay                             # read_lines: the recorder's gzip, sti
 from lib import ncdf
 NAN = float("nan"); ND = statistics.NormalDist()
 KEEP = {"bf", "mk", "ptb", "bk", "rs"}
+# Leg buys need the recorder's Daily websocket alive: its Pyth ticks (py, about 4/s) stop only when that socket is down, while the
+# 20 s REST poll keeps writing bk lines. 11-08 02:44-18:35 UTC the socket was dead and the leg traded blind: 1131 buys, 38 filled,
+# -342 USD. Normal 11-06/11-07 py gaps stay under 5 s except during socket drops. Sells are never blocked.
+FEED_MAX_AGE_MS = 10000
 SIDE_COLS = ["bid", "bsz", "ask", "asz", "a2", "a2s", "a3", "a3s", "b2", "b2s", "b3", "b3s", "nasks", "nbids", "seq", "stale"]
 RCOLS = ["t", "bf"] + [p + c for p in ("u_", "d_") for c in SIDE_COLS]
 VAR = {"solo_nostop": dict(model_pool="model", bot_pool=None, stop_pools=set())}
@@ -105,6 +109,7 @@ class Trader:
         self.rounds = {}; self.pool = self.pol["pool0"]; self.cnt = collections.Counter(); self.late = 0; self.last_hb = time.time()
         self.n_settled = 0; self.last_trim = 0.0; self.ntot = 0; self.by_start = {}; self.preloading = False; self.pre_until = 0
         self.leg = bool(a.orders_port); self.fills, self.sent, self.pending = {}, set(), {}
+        self.py_t = None   # recorder time (ms) of the last Pyth tick, the Daily websocket's heartbeat
         self.wallet = None   # leg mode: the whole wallet, sent by the bot every 10 s; one pool, so the 5 % cap is on it
         if self.leg:
             self.osk = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -136,6 +141,7 @@ class Trader:
         if t <= self.pre_until: return   # already read from the recorder's file by preload()
         src = ln[c + 1: c + 1 + ln[c + 1:].find(",")]
         self.cnt[src] += 1; self.ntot += 1
+        if src == "py": self.py_t = t
         if src not in KEEP:
             if self.tmax is None or t > self.tmax: self.tmax = t
             self.advance(); return
@@ -348,7 +354,8 @@ class Trader:
         now = self.tmax / 1000.0
         for k2 in [k2 for k2, t2 in self.pending.items() if now - t2 > 20.0]:   # the bot answers within 15 s or not at all: count it as unfilled
             del self.pending[k2]; self.fills.setdefault(k2, (0, 0.0, 0.0)); self.emit(dict(ev="venue", k=k2, sh=0, st="no answer"))
-        why = "flip" if o["act"] == "flip" else "late" if now - o["t"] > 1.0 else "previous unanswered" if self.pending else None
+        feed_down = o["kind"] == "buy" and (self.py_t is None or self.tmax - self.py_t > FEED_MAX_AGE_MS)
+        why = "flip" if o["act"] == "flip" else "late" if now - o["t"] > 1.0 else "feed down" if feed_down else "previous unanswered" if self.pending else None
         if why:
             self.fills[k] = (0, 0.0, 0.0); self.emit(dict(ev="order", k=k, sent=False, why=why)); return
         self.pending[k] = now
