@@ -130,6 +130,10 @@ const CONFIG = {
   cModel: 1.0,             // S6 forward model scaling factor
   minEdgeMargin: 0.04,     // Edge floor: q - (ask + fee) >= 0.04
   maxEntryAsk: 0.72,       // Maximum allowed entry ask (buy underpriced contracts only)
+  // owner's D1 (2026-11-09): one more buy on the same side at the same stake when the entry gate passes again at least 10 s after
+  // the last buy, with an edge at least the entry's, before any sale (scratchpad research3/bot-params F4, "add d=0 gap 10": LODO
+  // +59 USD/day after the 0.4 haircut on the VPS days, worst day and drawdown unchanged). A refused add is retried 10 s later.
+  addMax: Number(process.env.BOT_ADD_MAX ?? 1), addGapMs: Number(process.env.BOT_ADD_GAP_MS ?? 10000), addEdgeDelta: 0,
   // Stop: best train units of a 61-point grid (train 50.6 vs 42.2 for the old 30-90 s / -5 $ rule)
   stopLossMaxQ: 0.45,          // sell when the survival probability falls to 45 %
   stopLossMaxAdverseUsd: 3.0,  // or when the price is 3 $ against us since the round open
@@ -1025,7 +1029,7 @@ function updateSubscriptions() {
 
 function findPositionByRequest(requestId) {
   for (const [slug, pos] of activePositions.entries()) {
-    if (pos.buyRequestId === requestId || pos.pendingSell?.requestId === requestId) return [slug, pos];
+    if (pos.buyRequestId === requestId || pos.pendingSell?.requestId === requestId || pos.pendingAdd?.requestId === requestId) return [slug, pos];
   }
   return [null, null];
 }
@@ -1036,13 +1040,20 @@ function trackOrderResult(msg) {
   if (lgb?.orders[msg.requestId]) return lgbResult(msg);
   const [slug, pos] = findPositionByRequest(msg.requestId);
   if (!pos) return;
-  const isSell = pos.pendingSell?.requestId === msg.requestId;
+  const isSell = pos.pendingSell?.requestId === msg.requestId, isAdd = pos.pendingAdd?.requestId === msg.requestId;
   if (msg.type === 'daily_markets_trade_executed') {
     const accepted = Number(msg.execution?.acceptedSize) / 1_000_000;
     if (!(accepted > 0)) return;
     pos.lastFillAt = Date.now();
     if (isSell) pos.pendingSell.acceptedShares = accepted;
+    else if (isAdd) {
+      if (pos.pendingAdd.filled) return;
+      pos.pendingAdd.filled = accepted; pos.sharesBought += accepted; pos.adds = (pos.adds || 0) + 1;
+      console.log(new Date().toISOString(), `[ADD FILLED] ${slug} +${accepted} shares, position ${pos.sharesBought}`);
+    }
     else { pos.sharesBought = accepted; pos.buyAccepted = true; }
+  } else if (isAdd) {
+    pos.pendingAdd = null; // processed: filled above, or nothing filled (retried after the gap)
   } else if (!isSell) {
     pos.buyProcessed = true;
   } else {
@@ -1076,6 +1087,7 @@ function syncVenuePositions(list) {
     const qty = Number(v.quantity) / 1_000_000 - (lgb?.pos[tokenId]?.shares || 0); // the venue's quantity holds both strategies' shares
     if (!Number.isFinite(qty)) continue;
     if (!pos.buyProcessed && !(pos.buySentAt && Date.now() - pos.buySentAt > 15000) && pos.buySentAt) continue; // buy still in flight
+    if (pos.pendingAdd) continue; // an add in flight may not show in the venue's quantity yet
     if (pos.pendingSell) {
       if (qty >= (pos.pendingSell.qtyAtSend ?? pos.sharesBought) - 1e-6) continue; // the sell has not landed yet
       pos.pendingSell = null; // it landed: the venue quantity below replaces our bookkeeping
@@ -1112,6 +1124,10 @@ function trackOrderError(msg) {
     console.warn(new Date().toISOString(), `[CASHOUT REJECTED] ${slug} code=${msg.code}, will retry`);
     pos.pendingSell = null;
     pos.lastCashoutAttemptMs = Date.now() - 1200; // nothing is pending after a rejection: retry 0.3 s later, not 1.5 s
+  } else if (pos.pendingAdd?.requestId === msg.requestId) { // a refused add leaves the entry's position as it was
+    if (pos.pendingAdd.filled) { pos.sharesBought -= pos.pendingAdd.filled; pos.adds -= 1; }
+    console.warn(new Date().toISOString(), `[ADD REJECTED] ${slug} code=${msg.code}, position ${pos.sharesBought} shares kept`);
+    pos.pendingAdd = null;
   } else {
     console.warn(new Date().toISOString(), `[BUY REJECTED] ${slug} code=${msg.code}, no position opened`);
     activePositions.delete(slug);
@@ -1286,6 +1302,8 @@ function evaluateStrategy() {
     if (pos.buySentAt && !pos.buyAccepted && !pos.buyProcessed) {
       continue; // nothing to sell before the venue confirms the buy
     }
+    if (pos.pendingAdd && now - pos.pendingAdd.sentAt < 6000) continue; // an add in flight (expiry 4 s): sell once its shares are known
+    if (pos.pendingAdd) { pos.pendingAdd = null; saveBotState(); } // never answered: the venue sync settles the size
 
     if (remainingSeconds >= CONFIG.stopLossMinTau && remainingSeconds <= CONFIG.stopLossMaxTau) {
       const relDelta = pos.targetOutcome === 0 ? (currentBfPrice - pos.f0) : -(currentBfPrice - pos.f0);
@@ -1359,7 +1377,10 @@ function evaluateStrategy() {
     if (!m.startMs || !m.endMs) continue;
 
     const remainingSeconds = (m.endMs - now) / 1000;
-    if (tradedRounds.has(slug)) continue;
+    // D1: a round already traded is looked at again only for an add to its open, filled, never-sold position
+    const held = tradedRounds.has(slug) ? activePositions.get(slug) : null;
+    if (tradedRounds.has(slug) && !(held && (held.adds || 0) < CONFIG.addMax && held.buyAccepted && held.sharesBought > 0 && Number.isFinite(held.entryEdge)
+      && !held.cashoutAttempts && !held.pendingSell && !held.sellInFlight && !held.pendingAdd && now - (held.lastBuyAt || held.buySentAt) >= CONFIG.addGapMs)) continue;
 
     // 2. Calibrated Sniping Window: 50s to 130s remaining (safe zone around 120s)
     if (remainingSeconds < CONFIG.windowRemainingMin || remainingSeconds > CONFIG.windowRemainingMax) {
@@ -1410,6 +1431,14 @@ function evaluateStrategy() {
     const cost = level1Ask + fee(level1Ask, m.feeRateBps ?? 700);
     const edge = q - cost;
 
+    if (edge >= CONFIG.minEdgeMargin && held) {
+      if (targetSideName !== held.targetSideName || edge < held.entryEdge + CONFIG.addEdgeDelta) continue;
+      held.lastBuyAt = now; // one attempt per gap, filled or refused
+      saveBotState();
+      console.log(new Date().toISOString(), `[ADD TRIGGERED] ${slug} rem=${remainingSeconds.toFixed(1)}s side=${targetSideName} q=${q.toFixed(3)} ask=${level1Ask} edge=+${(edge * 100).toFixed(1)}% (entry +${(held.entryEdge * 100).toFixed(1)}%)`);
+      executeTrade({ slug, market: m, remainingSeconds, tau, f0, f_now: currentBfPrice, d, sigmaM, z, q, targetOutcome, targetSideName, book, oppBook, level1Ask, level1Sz, edge, add: held });
+      break;
+    }
     if (edge >= CONFIG.minEdgeMargin) {
       tradedRounds.add(slug);
       saveBotState();
@@ -1585,8 +1614,15 @@ async function executeTrade(params) {
     max_notional_micros: maxNotional.toString(),
     limit_price_micros: limitPriceMicros.toString(),
     edge: params.edge,
+    ...(params.add ? { add: true } : {}),
     status: CONFIG.paperMode ? 'paper_trade' : 'intent_sent'
   });
+
+  if (params.add) { // D1: the round's position grows when the venue fills it (trackOrderResult)
+    params.add.pendingAdd = { requestId, sentAt: Date.now(), shares: sharesToBuy };
+    saveBotState();
+    return;
+  }
 
   // Track open position for dynamic Stop-Loss
   activePositions.set(params.slug, {
@@ -1598,6 +1634,7 @@ async function executeTrade(params) {
     f0: params.f0,
     entryPrice: params.level1Ask,
     entryTau: params.tau,
+    entryEdge: params.edge,
     cashoutAttempted: false,
     buySentAt: Date.now(),
     buyAccepted: false,

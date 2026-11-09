@@ -71,7 +71,7 @@ const book = (tokenId) => ({ type: 'updown_book', tokenId, bids: level(0.5), ask
 let sells = 0, buys = 0;
 function note(frame) {
   const i = frame.intent;
-  console.log('HARNESS ' + JSON.stringify({ t: Date.now(), side: i.side, maxShares: i.maxShares, maxNotional: i.maxNotional, minFill: i.minFillShares, limit: i.limitPriceMicros, hasCash: 'cashAuthorization' in frame, nonce: frame.cashAuthorization?.nonce }));
+  console.log('HARNESS ' + JSON.stringify({ t: Date.now(), side: i.side, maxShares: i.maxShares, maxNotional: i.maxNotional, minFill: i.minFillShares, limit: i.limitPriceMicros, hasCash: 'cashAuthorization' in frame, nonce: frame.cashAuthorization?.nonce, outcome: i.outcomeIndex }));
 }
 class WebSocket extends EventEmitter {
   static OPEN = 1;
@@ -111,6 +111,7 @@ class WebSocket extends EventEmitter {
     if (m.intent.side === 'buy') {
       buys++;
       if (scenario === 'buy_rejected' || scenario === 'lgb_reject') return this.reject(m);
+      if (scenario === 'add_reject' && buys === 2) return this.reject(m); // D1: the add is refused, the entry stays
       if (scenario === 'lgb_collide') { // the leg holds 8 up shares; after the bot's buy, a venue list from before it, then the right one
         this.accept(m, m.intent.maxShares);
         const pos = (qty, at) => ({ type: 'updown_update', nativePositions: [{ market: { marketPda: PDA }, outcomeIndex: m.intent.outcomeIndex, quantity: qty, lastTradeAt: at }] });
@@ -279,6 +280,13 @@ const legPause = await runScenario(rawBot, 'lgb_reject', 6000, peak400, { LGB_PA
   { at: 800, o: { k: 'k1', act: 'entry', side: 'up', limit: 0.53, target: 200 } },
   { at: 2000, o: { k: 'k2', act: 'entry', side: 'up', limit: 0.53, target: 200 } },
   { at: 3200, o: { k: 'k3', act: 'entry', side: 'up', limit: 0.53, target: 200 } }] });
+// D1: the raw bot with a restored history enters on its own (price rising 5 USD/s, up ask 0.52); 10 s later the gate passes again on
+// the same side with a larger edge and it adds once. Refused, the add leaves the entry and is retried 10 s later. BOT_ADD_MAX 0: no add.
+const [addOn, addRej, addOff] = await Promise.all([
+  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000' }, hist),
+  runScenario(rawBot, 'add_reject', 27000, peak400, { FAKE_USDC: '2000' }, hist),
+  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '0' }, hist),
+]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
@@ -388,6 +396,14 @@ check(`G4: no sigmaM yet (warmup) drops the buy at a threshold of 2 (${rep(legWa
 check(`G4: a leg sale is never gated (${rep(legSellCalm, 'k1').st} ${rep(legSellCalm, 'k1').why ?? ''})`, rep(legSellCalm, 'k1').st === 'filled');
 check(`H2c: two refusals pause the leg's buys (${rep(legPause, 'k1').st} ${rep(legPause, 'k2').st} ${rep(legPause, 'k3').st} ${rep(legPause, 'k3').why ?? ''})`,
   rep(legPause, 'k1').st === 'rejected' && rep(legPause, 'k2').st === 'rejected' && rep(legPause, 'k3').st === 'dropped' && /^paused after refusals/.test(rep(legPause, 'k3').why ?? '') && legPause.out.includes('[LGB PAUSE]'));
+const buysOf = (r) => r.frames.filter((f) => f.side === 'buy'), posOf = (r) => r.state?.activePositions?.[0]?.[1];
+{ const b = buysOf(addOn), sh = b.map((f) => Number(f.maxShares) / 1e6);
+  check(`D1: one add on the same side >= 10 s after the entry, the position holds both (${b.length} buys, gap ${b[1] ? b[1].t - b[0].t : '-'} ms, ${sh} -> ${posOf(addOn)?.sharesBought})`,
+    b.length === 2 && b[1].t - b[0].t >= 10000 && b[1].outcome === b[0].outcome && Math.abs(posOf(addOn)?.sharesBought - sh[0] - sh[1]) < 1e-6 && addOn.out.includes('[ADD FILLED]')); }
+{ const b = buysOf(addRej), sh = b.map((f) => Number(f.maxShares) / 1e6);
+  check(`D1: a refused add keeps the entry and retries 10 s later (${b.length} buys, gaps ${b.slice(1).map((f, i) => f.t - b[i].t)} ms, position ${posOf(addRej)?.sharesBought})`,
+    b.length === 3 && b[2].t - b[1].t >= 10000 && addRej.out.includes('[ADD REJECTED]') && Math.abs(posOf(addRej)?.sharesBought - sh[0] - sh[2]) < 1e-6); }
+check(`D1: BOT_ADD_MAX 0 makes no add (${buysOf(addOff).length} buys)`, buysOf(addOff).length === 1);
 check('G4: the start line states both caps', legWarm.out.includes('and 60 USD per round (30 while sigmaM < 2)') && !legBuy.out.includes('while sigmaM'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
