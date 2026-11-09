@@ -133,7 +133,7 @@ const CONFIG = {
   // owner's D1 (2026-11-09): one more buy on the same side at the same stake when the entry gate passes again at least 10 s after
   // the last buy, with an edge at least the entry's, before any sale (scratchpad research3/bot-params F4, "add d=0 gap 10": LODO
   // +59 USD/day after the 0.4 haircut on the VPS days, worst day and drawdown unchanged). A refused add is retried 10 s later.
-  addMax: Number(process.env.BOT_ADD_MAX ?? 1), addGapMs: Number(process.env.BOT_ADD_GAP_MS ?? 10000), addEdgeDelta: 0,
+  addMax: Number(process.env.BOT_ADD_MAX ?? 0), addGapMs: Number(process.env.BOT_ADD_GAP_MS ?? 10000), addEdgeDelta: 0,
   // owner's H4 trial (2026-11-09 "lancé le test pour h4"): buy limit ask + 15 c instead of + 2 c, still capped at a 2.5 % edge, size
   // from the old limit. Rule fixed in advance (scratchpad research2/execution/h4/H4_report.md): a converted buy fills above the old
   // limit; stop once 15+ conversions sum <= -150 USD at the venue; keep at 100 conversions if >= +115 USD, win rate >= mean price
