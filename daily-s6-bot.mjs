@@ -298,15 +298,14 @@ async function refreshPrivySession() {
       PRIVY_TOKEN = data.token;
       if (data.refresh_token) PRIVY_REFRESH_TOKEN = data.refresh_token;
 
-      // Persist rotated tokens
-      if (fs.existsSync(AUTH_FILE)) {
-        try {
-          const a = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
-          a.privyToken = PRIVY_TOKEN;
-          if (data.refresh_token) a.privyRefreshToken = data.refresh_token;
-          fs.writeFileSync(AUTH_FILE, JSON.stringify(a, null, 2));
-        } catch(e) {}
-      }
+      // Persist rotated tokens, creating auth.json when only .env exists: Privy rotates the refresh token, so one kept in memory only
+      // is lost at the next restart (second instance, 2026-11-09 01:32: the .env refresh token was refused with 401 after two rotations)
+      try {
+        const a = fs.existsSync(AUTH_FILE) ? JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')) : {};
+        a.privyToken = PRIVY_TOKEN;
+        if (data.refresh_token) a.privyRefreshToken = data.refresh_token;
+        fs.writeFileSync(AUTH_FILE, JSON.stringify(a, null, 2), { mode: 0o600 });
+      } catch (e) { console.error(new Date().toISOString(), `[PRIVY] could not save the rotated tokens: ${e.message}`); }
 
       authFailed = false;
       console.log(new Date().toISOString(), `[PRIVY AUTO-REFRESH SUCCESS] rotated=${rotated} expiresIn=${jwtExpiresIn(PRIVY_TOKEN)}s`);

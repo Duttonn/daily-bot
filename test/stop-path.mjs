@@ -88,6 +88,7 @@ class WebSocket extends EventEmitter {
   reply(o, delay = 60) { setTimeout(() => this.emit('message', JSON.stringify(o)), delay); }
   send(raw) {
     const m = JSON.parse(raw);
+    if (m.type === 'auth' && scenario === 'privy_rotate' && m.token !== 'eyJ.rotated.t') return this.reply({ type: 'error', code: 'unauthorized', message: 'bad token' });
     if (m.type === 'auth') this.reply({ type: 'authed', wallet: 'x' });
     if (m.type === 'updown_subscribe') {
       if (scenario === 'lgb_shared') this.reply({ type: 'updown_update', nativePositions: [{ market: { marketPda: PDA }, outcomeIndex: 1, quantity: '11000000' }] }, 200);
@@ -147,7 +148,8 @@ globalThis.fetch = async (url, opts) => {
     await new Promise((r) => setTimeout(r, 300));
   }
   let json = {};
-  if (String(url).includes('trading-session?')) {
+  if (String(url).includes('auth.privy.io')) json = { token: 'eyJ.rotated.t', refresh_token: 'rotated-refresh' };
+  else if (String(url).includes('trading-session?')) {
     json = { tradingSession: { vault: key, session: key, cashSession: { enabled: true, nextNonce: '5', programId: key, deploymentDomain: '00'.repeat(32),
       vault: key, session: key, sessionGeneration: '1', adapterProgram: key, destination: key } } };
   } else if (body.method === 'getTokenAccountBalance') {
@@ -200,9 +202,10 @@ function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFile
       const saved = fs.existsSync(histPath) ? JSON.parse(fs.readFileSync(histPath, 'utf8')) : null;
       const lgbPath = path.join(dir, 'lgb-state.json');
       const lgbState = fs.existsSync(lgbPath) ? JSON.parse(fs.readFileSync(lgbPath, 'utf8')) : null;
+      const authPath = path.join(dir, 'none'), auth = fs.existsSync(authPath) ? { ...JSON.parse(fs.readFileSync(authPath, 'utf8')), mode: fs.statSync(authPath).mode & 0o777 } : null;
       fs.rmSync(dir, { recursive: true, force: true });
       if (rsock) rsock.close();
-      resolve({ frames, state, out, saved, replies, lgbState });
+      resolve({ frames, state, out, saved, replies, lgbState, auth });
     });
   });
 }
@@ -284,7 +287,7 @@ const legPause = await runScenario(rawBot, 'lgb_reject', 6000, peak400, { LGB_PA
 // the same side with a larger edge and it adds once. Refused, the add leaves the entry and is retried 10 s later. BOT_ADD_MAX 0: no add.
 const [addOn, addRej, addOff] = await Promise.all([
   runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000' }, hist),
-  runScenario(rawBot, 'add_reject', 27000, peak400, { FAKE_USDC: '2000' }, hist),
+  runScenario(rawBot, 'add_reject', 32000, peak400, { FAKE_USDC: '2000' }, hist),
   runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '0' }, hist),
 ]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
@@ -396,6 +399,10 @@ check(`G4: no sigmaM yet (warmup) drops the buy at a threshold of 2 (${rep(legWa
 check(`G4: a leg sale is never gated (${rep(legSellCalm, 'k1').st} ${rep(legSellCalm, 'k1').why ?? ''})`, rep(legSellCalm, 'k1').st === 'filled');
 check(`H2c: two refusals pause the leg's buys (${rep(legPause, 'k1').st} ${rep(legPause, 'k2').st} ${rep(legPause, 'k3').st} ${rep(legPause, 'k3').why ?? ''})`,
   rep(legPause, 'k1').st === 'rejected' && rep(legPause, 'k2').st === 'rejected' && rep(legPause, 'k3').st === 'dropped' && /^paused after refusals/.test(rep(legPause, 'k3').why ?? '') && legPause.out.includes('[LGB PAUSE]'));
+// a refreshed Privy session is saved even though no auth.json existed (second instance, 11-09 01:32)
+const rot = await runScenario(rawBot, 'privy_rotate', 5000, peak400);
+check(`privy: rotated tokens are saved to a new auth.json, mode 600 (${rot.auth ? rot.auth.privyRefreshToken + ' ' + rot.auth.mode.toString(8) : 'none'})`,
+  rot.auth?.privyToken === 'eyJ.rotated.t' && rot.auth.privyRefreshToken === 'rotated-refresh' && rot.auth.mode === 0o600 && rot.out.includes('PRIVY AUTO-REFRESH SUCCESS'));
 const buysOf = (r) => r.frames.filter((f) => f.side === 'buy'), posOf = (r) => r.state?.activePositions?.[0]?.[1];
 { const b = buysOf(addOn), sh = b.map((f) => Number(f.maxShares) / 1e6);
   check(`D1: one add on the same side >= 10 s after the entry, the position holds both (${b.length} buys, gap ${b[1] ? b[1].t - b[0].t : '-'} ms, ${sh} -> ${posOf(addOn)?.sharesBought})`,
