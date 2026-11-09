@@ -659,7 +659,19 @@ loadBotState();
 // size on the whole wallet (5 % each), and one trailing floor on the wallet blocks new buys of both. The leg's ledger
 // (lgb-state.json: cash, shares per market side, spend per round) only keeps which shares are the leg's and the leg's PnL.
 const LGB_PORT = +process.env.LGB_PORT || 0;
-const LGB = { replyPort: +process.env.LGB_REPLY_PORT || 0, pool0: +process.env.LGB_POOL0 || 100, capFrac: 0.05, quietMs: 15000, orderTimeoutMs: 15000, walletEveryMs: 10000 };
+const LGB = { replyPort: +process.env.LGB_REPLY_PORT || 0, pool0: +process.env.LGB_POOL0 || 100, capFrac: 0.05, quietMs: 15000, orderTimeoutMs: 15000, walletEveryMs: 10000,
+  // owner's H2c (2026-11-09): pause leg buys 10 min once 27 of the last 30 venue answers to leg buys are refusals. On the leg's real
+  // history (11-06..11-08: 95 % refused in the 11-08 blind window, 43 % elsewhere) it fires from 02:52:57 in that window and never
+  // outside it; 18 of 20 also fired at 11-07 05:14, 05:34 and 11-08 02:41. LGB_PAUSE_WIN / LGB_PAUSE_REFUSED override it (the harness).
+  pauseWin: +process.env.LGB_PAUSE_WIN || 30, pauseRefused: +process.env.LGB_PAUSE_REFUSED || 27, pauseMs: 600000 };
+const lgbBuyAnswers = []; let lgbPausedUntil = 0; // true = filled, false = refused by the venue; in memory only
+function lgbNoteBuy(filled) {
+  lgbBuyAnswers.push(filled); if (lgbBuyAnswers.length > LGB.pauseWin) lgbBuyAnswers.shift();
+  const refused = lgbBuyAnswers.filter((x) => !x).length;
+  if (lgbBuyAnswers.length < LGB.pauseWin || refused < LGB.pauseRefused) return;
+  lgbPausedUntil = Date.now() + LGB.pauseMs; lgbBuyAnswers.length = 0;
+  console.warn(new Date().toISOString(), `[LGB PAUSE] ${refused} of the last ${LGB.pauseWin} leg buys refused: leg buys paused until ${new Date(lgbPausedUntil).toISOString()}`);
+}
 const LGB_FILE = path.join(process.cwd(), 'lgb-state.json');
 let lgb = null; // { cash, halted, pos: { tokenId: { slug, marketId, marketPda, outcome, endMs, shares } }, spent, cap: { slug: usd }, orders: { requestId: order }, touched: { tokenId: ms }, changedAt }
 let lgbSending = false;
@@ -715,6 +727,7 @@ async function lgbOrder(o) {
     const wallet = currentUsdcBalance;
     if (!(wallet > balanceFloor())) return drop('floor');
     if (dayCapReached()) return drop('day cap');
+    if (Date.now() < lgbPausedUntil) return drop(`paused after refusals until ${new Date(lgbPausedUntil).toISOString().slice(11, 19)}`);
     const sig = calculateRealizedVol(priceHistory, 600, 500); // the heartbeat's sigmaM
     if (CONFIG.lgbMinSigma > 0 && !Number.isFinite(sig)) return drop('sigmaM warmup');
     const roundMax = !(CONFIG.lgbMinSigma > 0) || sig >= CONFIG.lgbMinSigma ? CONFIG.lgbMaxStakeUsd : CONFIG.lgbCalmStakeUsd;
@@ -756,6 +769,7 @@ function lgbResult(msg) {
     o.filled = { sh, usd: o.buy ? notional + fe : notional - fe, fe }; // a buy costs notional + fee, a sale brings notional - fee
     lgbBook(o, o.filled, 1);
     lgbReply({ k: o.k, sh, cost: o.filled.usd, fe, st: 'filled' });
+    if (o.buy) lgbNoteBuy(true);
     console.log(new Date().toISOString(), `[LGB FILLED] ${o.slug} ${o.act} ${sh} shares, ${o.buy ? 'cost' : 'proceeds'} ${o.filled.usd.toFixed(4)}$ cash=${lgb.cash.toFixed(2)}$`);
   } else {
     o.processed = true; o.processedAt = Date.now(); // without an accepted size, lgbTick closes it as empty 1 s later
@@ -770,6 +784,7 @@ function lgbError(msg) {
   if (o.filled) lgbBook(o, o.filled, -1);
   lgbTouch(o.tokenId); saveLgb();
   lgbReply({ k: o.k, sh: 0, cost: 0, fe: 0, st: 'rejected', code: msg.code });
+  if (o.buy) lgbNoteBuy(false);
   console.warn(new Date().toISOString(), `[LGB REJECTED] ${o.slug} ${o.act} code=${msg.code}${o.filled ? ', accepted fill taken back' : ''} cash=${lgb.cash.toFixed(2)}$`);
 }
 

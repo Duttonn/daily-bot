@@ -274,6 +274,11 @@ const [legCalm, legMoving, legWarm, legSellCalm] = await Promise.all([
   runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9' }, { 'lgb-state.json': sharedLeg },
     { port: 47333, replyPort: 47334, intents: [{ at: 800, o: { k: 'k1', act: 'sell', side: 'down', limit: 0.48, shares: 5 } }] }),
 ]);
+// H2c: with a window of 2 and 2 refusals to pause, two venue refusals pause the leg's buys; the third buy is dropped as paused
+const legPause = await runScenario(rawBot, 'lgb_reject', 6000, peak400, { LGB_PAUSE_WIN: '2', LGB_PAUSE_REFUSED: '2' }, {}, { port: 47335, replyPort: 47336, intents: [
+  { at: 800, o: { k: 'k1', act: 'entry', side: 'up', limit: 0.53, target: 200 } },
+  { at: 2000, o: { k: 'k2', act: 'entry', side: 'up', limit: 0.53, target: 200 } },
+  { at: 3200, o: { k: 'k3', act: 'entry', side: 'up', limit: 0.53, target: 200 } }] });
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
   runScenario(bot, 'buy_rejected', 11000),
@@ -381,6 +386,8 @@ check(`G4: sigmaM under the threshold buys at the 30 USD calm cap (${rep(legCalm
 check(`G4: the same history over the threshold buys at the 60 USD cap (${rep(legMoving, 'k1').st}, ${Number(legMoving.frames[0]?.maxShares) / 1e6} shares)`, rep(legMoving, 'k1').st === 'filled' && legMoving.frames[0]?.maxShares === '109000000');
 check(`G4: no sigmaM yet (warmup) drops the buy at a threshold of 2 (${rep(legWarm, 'k1').why})`, rep(legWarm, 'k1').why === 'sigmaM warmup');
 check(`G4: a leg sale is never gated (${rep(legSellCalm, 'k1').st} ${rep(legSellCalm, 'k1').why ?? ''})`, rep(legSellCalm, 'k1').st === 'filled');
+check(`H2c: two refusals pause the leg's buys (${rep(legPause, 'k1').st} ${rep(legPause, 'k2').st} ${rep(legPause, 'k3').st} ${rep(legPause, 'k3').why ?? ''})`,
+  rep(legPause, 'k1').st === 'rejected' && rep(legPause, 'k2').st === 'rejected' && rep(legPause, 'k3').st === 'dropped' && /^paused after refusals/.test(rep(legPause, 'k3').why ?? '') && legPause.out.includes('[LGB PAUSE]'));
 check('G4: the start line states both caps', legWarm.out.includes('and 60 USD per round (30 while sigmaM < 2)') && !legBuy.out.includes('while sigmaM'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
