@@ -134,6 +134,11 @@ const CONFIG = {
   // the last buy, with an edge at least the entry's, before any sale (scratchpad research3/bot-params F4, "add d=0 gap 10": LODO
   // +59 USD/day after the 0.4 haircut on the VPS days, worst day and drawdown unchanged). A refused add is retried 10 s later.
   addMax: Number(process.env.BOT_ADD_MAX ?? 1), addGapMs: Number(process.env.BOT_ADD_GAP_MS ?? 10000), addEdgeDelta: 0,
+  // owner's H4 trial (2026-11-09 "lancé le test pour h4"): buy limit ask + 15 c instead of + 2 c, still capped at a 2.5 % edge, size
+  // from the old limit. Rule fixed in advance (scratchpad research2/execution/h4/H4_report.md): a converted buy fills above the old
+  // limit; stop once 15+ conversions sum <= -150 USD at the venue; keep at 100 conversions if >= +115 USD, win rate >= mean price
+  // + 0.03 and no day above half the total. BUY_LIMIT_OVER_ASK=0.02 returns to the old limit without new code.
+  buyLimitOverAsk: Number(process.env.BUY_LIMIT_OVER_ASK ?? 0.15),
   // Stop: best train units of a 61-point grid (train 50.6 vs 42.2 for the old 30-90 s / -5 $ rule)
   stopLossMaxQ: 0.45,          // sell when the survival probability falls to 45 %
   stopLossMaxAdverseUsd: 3.0,  // or when the price is 3 $ against us since the round open
@@ -1505,11 +1510,13 @@ async function executeTrade(params) {
     }
   }
 
-  // Generous slippage buffer (+20 ticks) strictly bounded by minEdgeFloor (+2.5% net)
+  // Limit: the ask plus CONFIG.buyLimitOverAsk, strictly bounded by minEdgeFloor (+2.5% net). The size still comes from the old
+  // ask + 2 c limit (H4 trial: a size computed on the wider limit would cut every buy by about 4 %).
   const maxPriceForEdge = findMaxPriceForEdge(params.q, 0.025, params.market.feeRateBps ?? 700);
-  const limitPriceToUse = Math.min(baseAskPrice + 0.020, maxPriceForEdge);
+  const limitPriceToUse = Math.min(baseAskPrice + CONFIG.buyLimitOverAsk, maxPriceForEdge);
+  const sizingLimit = Math.min(baseAskPrice + 0.020, maxPriceForEdge);
 
-  const priceEstWithSlippage = limitPriceToUse + fee(limitPriceToUse, params.market.feeRateBps ?? 700);
+  const priceEstWithSlippage = sizingLimit + fee(sizingLimit, params.market.feeRateBps ?? 700);
   const rawTargetShares = Math.floor(targetSpend / Math.max(0.1, priceEstWithSlippage));
   const sharesTarget = Math.max(1, Math.min(CONFIG.maxSharesSafetyCap, rawTargetShares));
 
@@ -1612,6 +1619,7 @@ async function executeTrade(params) {
     shares_micros: sharesMicros.toString(),
     max_notional_micros: maxNotional.toString(),
     limit_price_micros: limitPriceMicros.toString(),
+    limit_old_micros: String(Math.round(sizingLimit * 1_000_000)), // H4: a fill priced above it is a converted buy
     edge: params.edge,
     ...(params.add ? { add: true } : {}),
     status: CONFIG.paperMode ? 'paper_trade' : 'intent_sent'

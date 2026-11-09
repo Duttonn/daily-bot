@@ -288,7 +288,7 @@ const legPause = await runScenario(rawBot, 'lgb_reject', 6000, peak400, { LGB_PA
 const [addOn, addRej, addOff] = await Promise.all([
   runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000' }, hist),
   runScenario(rawBot, 'add_reject', 32000, peak400, { FAKE_USDC: '2000' }, hist),
-  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '0' }, hist),
+  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '0', BUY_LIMIT_OVER_ASK: '0.02' }, hist),
 ]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
@@ -411,6 +411,10 @@ const buysOf = (r) => r.frames.filter((f) => f.side === 'buy'), posOf = (r) => r
   check(`D1: a refused add keeps the entry and retries 10 s later (${b.length} buys, gaps ${b.slice(1).map((f, i) => f.t - b[i].t)} ms, position ${posOf(addRej)?.sharesBought})`,
     b.length === 3 && b[2].t - b[1].t >= 10000 && addRej.out.includes('[ADD REJECTED]') && Math.abs(posOf(addRej)?.sharesBought - sh[0] - sh[2]) < 1e-6); }
 check(`D1: BOT_ADD_MAX 0 makes no add (${buysOf(addOff).length} buys)`, buysOf(addOff).length === 1);
+// H4 trial: the buy limit is ask 0.52 + 15 c capped at the 2.5 % edge, the size still from the old ask + 2 c limit (53 shares for 30 USD)
+{ const on = buysOf(addOn)[0], off = buysOf(addOff)[0];
+  check(`H4: limit ${Number(on?.limit) / 1e6} over the old 0.54 with the old size ${Number(on?.maxShares) / 1e6}; BUY_LIMIT_OVER_ASK 0.02 gives ${Number(off?.limit) / 1e6}`,
+    Number(on?.limit) > 540000 && Number(on.limit) <= 670000 && on.maxShares === '53000000' && Number(off?.limit) === 540000 && off.maxShares === '53000000'); }
 check('G4: the start line states both caps', legWarm.out.includes('and 60 USD per round (30 while sigmaM < 2)') && !legBuy.out.includes('while sigmaM'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);
