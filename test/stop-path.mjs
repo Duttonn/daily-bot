@@ -287,10 +287,12 @@ const legPause = await runScenario(rawBot, 'lgb_reject', 6000, peak400, { LGB_PA
   { at: 3200, o: { k: 'k3', act: 'entry', side: 'up', limit: 0.53, target: 200 } }] });
 // D1: the raw bot with a restored history enters on its own (price rising 5 USD/s, up ask 0.52); 10 s later the gate passes again on
 // the same side with a larger edge and it adds once (BOT_ADD_MAX 1). Refused, the add leaves the entry and is retried 10 s later. Default: no add.
-const [addOn, addRej, addOff] = await Promise.all([
-  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '1' }, hist),
-  runScenario(rawBot, 'add_reject', 32000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '1' }, hist),
-  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BUY_LIMIT_OVER_ASK: '0.02' }, hist),
+// The restored history is agitated (sigmaM about 4), so these runs lift the calm-only gate (CALM_VOL_THRESHOLD 12); calmOff keeps the default 2.
+const [addOn, addRej, addOff, calmOff] = await Promise.all([
+  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '1', CALM_VOL_THRESHOLD: '12' }, hist),
+  runScenario(rawBot, 'add_reject', 32000, peak400, { FAKE_USDC: '2000', BOT_ADD_MAX: '1', CALM_VOL_THRESHOLD: '12' }, hist),
+  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000', BUY_LIMIT_OVER_ASK: '0.02', CALM_VOL_THRESHOLD: '12' }, hist),
+  runScenario(rawBot, 'add', 20000, peak400, { FAKE_USDC: '2000' }, hist),
 ]);
 const [partial, rejected, sellRej, noProc, floored, sellLost, buySilent, reset, histFresh, histStale] = await Promise.all([
   runScenario(bot, 'partial', 13000),
@@ -413,6 +415,9 @@ const buysOf = (r) => r.frames.filter((f) => f.side === 'buy'), posOf = (r) => r
   check(`D1: a refused add keeps the entry and retries 10 s later (${b.length} buys, gaps ${b.slice(1).map((f, i) => f.t - b[i].t)} ms, position ${posOf(addRej)?.sharesBought})`,
     b.length === 3 && b[2].t - b[1].t >= 10000 && addRej.out.includes('[ADD REJECTED]') && Math.abs(posOf(addRej)?.sharesBought - sh[0] - sh[2]) < 1e-6); }
 check(`D1: by default the bot makes no add (${buysOf(addOff).length} buys)`, buysOf(addOff).length === 1);
+{ const sig = Number((firstHb(calmOff).match(/sigmaM=([\d.]+)/) || [])[1]);
+  check(`O5: by default no entry while sigmaM >= 2 (first heartbeat sigmaM ${sig}, ${buysOf(calmOff).length} buys; ${buysOf(addOff).length} with the gate at 12)`,
+    sig >= 2 && buysOf(calmOff).length === 0 && buysOf(addOff).length >= 1 && calmOff.out.includes('only below sigmaM 2\n') && addOff.out.includes('only below sigmaM 12\n')); }
 // H4 trial: the buy limit is ask 0.52 + 15 c capped at the 2.5 % edge, the size still from the old ask + 2 c limit (53 shares for 30 USD)
 { const on = buysOf(addOn)[0], off = buysOf(addOff)[0];
   check(`H4: limit ${Number(on?.limit) / 1e6} over the old 0.54 with the old size ${Number(on?.maxShares) / 1e6}; BUY_LIMIT_OVER_ASK 0.02 gives ${Number(off?.limit) / 1e6}`,

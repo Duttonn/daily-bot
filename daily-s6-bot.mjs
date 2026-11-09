@@ -125,7 +125,10 @@ const CONFIG = {
   earlyEntryMaxSigma: 3.0, // entries in the round's first 80 s only in a calm market (sigmaM below this)
   lateEntryTau: 220,       // otherwise enter from 220 s remaining
   minZScore: 0.40,         // Minimum statistical conviction Z >= 0.40
-  calmVolThreshold: 12.0,  // Allow trading unless extreme volatility (>= 12 $/sqrt(s) over 10 min)
+  // new entries only while sigmaM ($/sqrt(s) over 10 min) is below this. Was 12 (only extreme volatility blocked). Owner's O5, 2026-11-09:
+  // since the venue's quotes changed on 11-07 06:00 UTC (half-spread 2 -> 4 c), the bot made +339 USD live in calm markets (43 trades)
+  // and -196 in agitated ones (57); no engine rule tried for sigmaM >= 2 won on held-out data. CALM_VOL_THRESHOLD overrides it.
+  calmVolThreshold: Number(process.env.CALM_VOL_THRESHOLD ?? 2.0),
   minSigmaFloor: 2.20,     // Volatility floor to prevent underestimating variance on 5m BTC
   cModel: 1.0,             // S6 forward model scaling factor
   minEdgeMargin: 0.04,     // Edge floor: q - (ask + fee) >= 0.04
@@ -223,6 +226,7 @@ console.log('  Vault PDA:      ', VAULT.toBase58());
 console.log('  Session PDA:    ', SESSION.toBase58());
 console.log('  Timing Window:  ', `[${CONFIG.windowRemainingMin}s, ${CONFIG.windowRemainingMax}s] continuous sniper`);
 console.log('  Early Entries:  ', `before ${CONFIG.lateEntryTau}s remaining only if sigmaM < ${CONFIG.earlyEntryMaxSigma}`);
+console.log('  New Entries:    ', `only below sigmaM ${CONFIG.calmVolThreshold}`);
 console.log('  Z-Score Filter: ', `Z >= ${CONFIG.minZScore}`);
 console.log('  Edge Margin:    ', `edge >= +${(CONFIG.minEdgeMargin * 100).toFixed(1)}% net`);
 console.log('  Max Entry Ask:  ', `<=${CONFIG.maxEntryAsk}$`);
