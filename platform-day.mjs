@@ -20,6 +20,10 @@ const US = process.env.US_OWNER || '7AVZX22zfpqJLYcysVF3obt8BEUGL2AxtktEtDfM9xpD
 const HOSTED = (process.env.HOSTED_OWNERS || '3Ga7z16ntwpMmr7pqZhWAnHpajUbbaeJB9etYnTmKH43').split(',').filter(Boolean);
 const ROWS = 'platform-tx.jsonl', OUT = 'day-cap.json', LEDGER = 'day-caps.jsonl'; // LEDGER: each past day's base cap and our result
 const SHARE = +(process.env.CAP_SHARE || 0.5), RULE = process.env.CAP_RULE || 'net_from_others';
+// CAP_OFF=1 (owner 2026-11-09, "retire le plafond pour l'instant"): day-cap.json carries cap null, so the bot has no cap; the base,
+// the others' result and the vault are still written for monitoring. ponytail: the carry keeps counting while the cap is off;
+// keep it or reset it when the cap comes back (owner's call).
+const CAP_OFF = process.env.CAP_OFF === '1';
 export const RULES = {
   net_from_others: (d) => d.feesAll + d.vault + d.ourNet - (d.feesHosted || 0) - (d.vaultHosted || 0), // the platform's result on every user but us and the hosted accounts
   fees_all: (d) => d.feesAll,                             // every fee, ours included
@@ -110,10 +114,10 @@ async function catchUp(vaultAta) {
 }
 
 // writes today's cap from yesterday once the rows cover all of yesterday
-export async function writeCap(ourAta) {
+export async function writeCap(ourAta, vaultAta) {
   const today = dayOf(Date.now() / 1000), y = dayOf(Date.now() / 1000 - 86400);
   if (Date.now() / 1000 < dayStartSec(today) + 30) return null; // yesterday's last payouts may not be read yet
-  try { if (JSON.parse(fs.readFileSync(OUT, 'utf8')).day === today) return null; } catch {}
+  try { const o = JSON.parse(fs.readFileSync(OUT, 'utf8')); if (o.day === today && (o.cap === null) === CAP_OFF) return null; } catch {}
   const rows = readRows(), start = rows.find((x) => x.kind === 'start');
   if (!start || start.t > dayStartSec(y)) return null; // rows begin after yesterday 00:00: no full day yet
   const d = summarize(rows, y);
@@ -123,9 +127,11 @@ export async function writeCap(ourAta) {
   // ponytail: no ceiling on the carry; a day the job missed is left out of it.
   let prev = null;
   try { prev = JSON.parse(fs.readFileSync(OUT, 'utf8')); } catch {}
-  if (prev?.day === y && !readLedger().some((x) => x.day === y)) fs.appendFileSync(LEDGER, JSON.stringify({ day: y, base: prev.base ?? prev.cap, ourNet: d.ourNet }) + '\n');
+  const vaultEnd = r2(await balanceAt(vaultAta, dayStartSec(today))), othersFees = r2(d.feesAll - d.feesOurs - d.feesHosted);
+  if (prev?.day === y && !readLedger().some((x) => x.day === y))
+    fs.appendFileSync(LEDGER, JSON.stringify({ day: y, base: prev.base ?? prev.cap, ourNet: d.ourNet, othersNet: gains.net_from_others, othersFees, vaultEnd }) + '\n');
   const base = r2(Math.max(0, SHARE * gains[RULE])), ledger = readLedger();
-  const out = { day: today, basedOn: y, rule: RULE, share: SHARE, base, carry: carryOf(ledger), cap: capWithCarry(base, ledger), gains, parts: d, at: new Date().toISOString() };
+  const out = { day: today, basedOn: y, rule: RULE, share: SHARE, base, carry: carryOf(ledger), cap: CAP_OFF ? null : capWithCarry(base, ledger), capIfOn: capWithCarry(base, ledger), othersFees, vaultEnd, gains, parts: d, at: new Date().toISOString() };
   fs.writeFileSync(OUT + '.tmp', JSON.stringify(out, null, 1));
   fs.renameSync(OUT + '.tmp', OUT);
   return out;
@@ -158,7 +164,7 @@ else if (import.meta.url === `file://${process.argv[1]}`) {
   const once = process.argv.includes('--once');
   for (;;) {
     try {
-      const n = await catchUp(vaultAta), out = await writeCap(ourAta);
+      const n = await catchUp(vaultAta), out = await writeCap(ourAta, vaultAta);
       console.log(new Date().toISOString(), `[PLATFORM] +${n} vault tx${out ? ` | cap ${out.day} = ${out.share} x ${out.rule} ${out.gains[out.rule]} = ${out.cap} USD | ${JSON.stringify(out.gains)}` : ''}`);
     } catch (e) { console.error(new Date().toISOString(), `[PLATFORM ERROR] ${e.message}`); }
     if (once) break;
