@@ -176,7 +176,7 @@ function runScenario(botSource, scenario, ms, seedState, extraEnv = {}, seedFile
   fs.writeFileSync(path.join(dir, 'bot.mjs'), botSource);
   const env = { PATH: process.env.PATH, SCENARIO: scenario, STOP_PROBE_SHARES: '6', OWNER_ADDRESS: '11111111111111111111111111111111',
     SESSION_SECRET_KEY: JSON.stringify(Array(64).fill(7)), PRIVY_TOKEN: 'x', PRIVY_REFRESH_TOKEN: 'x', ENV_FILE: path.join(dir, 'none'), AUTH_FILE: path.join(dir, 'none'),
-    ...(lgb ? { LGB_PORT: String(lgb.port), LGB_REPLY_PORT: String(lgb.replyPort), LGB_MIN_SIGMA: '0' } : {}), ...extraEnv }; // the O2 gate is off unless a scenario sets it
+    ...(lgb ? { LGB_PORT: String(lgb.port), LGB_REPLY_PORT: String(lgb.replyPort), LGB_MIN_SIGMA: '0', LGB_MAX_STAKE_USD: '60' } : {}), ...extraEnv }; // the O2 gate is off unless a scenario sets it
   const replies = [];
   const rsock = lgb ? dgram.createSocket('udp4') : null;
   if (rsock) { rsock.on('message', (b) => replies.push(JSON.parse(b))); rsock.bind(lgb.replyPort, '127.0.0.1'); }
@@ -271,12 +271,14 @@ const [legDayCap, legDayUnder] = await Promise.all([
 // G4 volatility caps: the leg's round cap is 60 USD while sigmaM >= LGB_MIN_SIGMA and 30 under it; a restored history gives a
 // numeric sigmaM, none leaves it in warmup. Wallet 2000 so 5 % (100 USD) does not bind.
 const hist = { 'price-history.json': savedTicks(2000) };
-const [legCalm, legMoving, legWarm, legSellCalm] = await Promise.all([
+const [legCalm, legMoving, legWarm, legSellCalm, legAgitOff] = await Promise.all([
   runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9', FAKE_USDC: '2000' }, hist, { port: 47327, replyPort: 47328, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '0.0001', FAKE_USDC: '2000' }, hist, { port: 47329, replyPort: 47330, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '2' }, {}, { port: 47331, replyPort: 47332, intents: [legOrders[0]] }),
   runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '1e9' }, { 'lgb-state.json': sharedLeg },
     { port: 47333, replyPort: 47334, intents: [{ at: 800, o: { k: 'k1', act: 'sell', side: 'down', limit: 0.48, shares: 5 } }] }),
+  // O1: the default agitated cap (LGB_MAX_STAKE_USD unset) is 0, so the same agitated history buys nothing
+  runScenario(rawBot, 'lgb_buy', 5000, peak400, { LGB_MIN_SIGMA: '0.0001', FAKE_USDC: '2000', LGB_MAX_STAKE_USD: undefined }, hist, { port: 47337, replyPort: 47338, intents: [legOrders[0]] }),
 ]);
 // H2c: with a window of 2 and 2 refusals to pause, two venue refusals pause the leg's buys; the third buy is dropped as paused
 const legPause = await runScenario(rawBot, 'lgb_reject', 6000, peak400, { LGB_PAUSE_WIN: '2', LGB_PAUSE_REFUSED: '2' }, {}, { port: 47335, replyPort: 47336, intents: [
@@ -415,6 +417,7 @@ check(`D1: by default the bot makes no add (${buysOf(addOff).length} buys)`, buy
 { const on = buysOf(addOn)[0], off = buysOf(addOff)[0];
   check(`H4: limit ${Number(on?.limit) / 1e6} over the old 0.54 with the old size ${Number(on?.maxShares) / 1e6}; BUY_LIMIT_OVER_ASK 0.02 gives ${Number(off?.limit) / 1e6}`,
     Number(on?.limit) > 540000 && Number(on.limit) <= 670000 && on.maxShares === '53000000' && Number(off?.limit) === 540000 && off.maxShares === '53000000'); }
+check(`O1: by default an agitated round buys nothing (${rep(legAgitOff, 'k1').st}, ${rep(legAgitOff, 'k1').why}, ${legAgitOff.frames.length} frames)`, rep(legAgitOff, 'k1').st === 'dropped' && legAgitOff.frames.length === 0 && legAgitOff.out.includes('and 0 USD per round (30 while sigmaM <'));
 check('G4: the start line states both caps', legWarm.out.includes('and 60 USD per round (30 while sigmaM < 2)') && !legBuy.out.includes('while sigmaM'));
 console.log(failures ? `${failures} FAILED` : 'ALL PASSED');
 process.exit(failures ? 1 : 0);

@@ -148,7 +148,9 @@ const CONFIG = {
   // Capital Preservation Sizing
   sizingFraction: Math.min(0.05, parseFloat(process.env.SIZING_FRACTION) > 0 ? parseFloat(process.env.SIZING_FRACTION) : 0.05), // 5 % of the balance, capped: a higher stake needs a code change
   maxStakeUsd: 30,             // at most 30 USD per position, fees included, for the bot (owner 2026-11-07: the stake stops growing with the wallet)
-  lgbMaxStakeUsd: 60,          // the leg's round cap while sigmaM >= lgbMinSigma (owner's O8, 2026-11-08), where its edge was
+  // the leg's round cap while sigmaM >= lgbMinSigma. 0 = no leg buy there (owner's O1, 2026-11-09: since the venue's spreads widened on 11-07,
+  // the engine leg lost on agitated rounds, 16 trades about -240 USD, while calm rounds made +634 USD raw in replay). Was 60 (owner's O8).
+  lgbMaxStakeUsd: Number(process.env.LGB_MAX_STAKE_USD ?? 0),
   lgbCalmStakeUsd: 30,         // the leg's round cap while sigmaM < lgbMinSigma (owner's G4, 2026-11-09): the trader prices calm seconds at a
                                // sigma floor of 1.0 (policy sigma_floor_calm); held out on 11-05..11-08 that added +221 USD/day for bot + leg at
                                // 60 USD after the 0.4 haircut, 3/4 of it on 11-07. 30 halves the extra flow into the vault (not simulated at 30).
