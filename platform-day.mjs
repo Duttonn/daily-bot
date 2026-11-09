@@ -15,10 +15,13 @@ const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const MM = 'F9sT6bbtmT1bo7VA5eCbGe5QTiZ3AMW36ERH9DohGEj5';  // market maker vault, every fill's counterparty
 const FEE = 'DULx9BVUyF3N27NfGpEbtSn9WPvFkeDupmBudbjPUkxm'; // platform fee wallet
 const US = process.env.US_OWNER || '7AVZX22zfpqJLYcysVF3obt8BEUGL2AxtktEtDfM9xpD'; // our cash vault
+// cash vaults of the accounts we host on the VPS (owner 2026-11-09: another person's account, ~/daily-bot-2): their trades and
+// payouts are not the others' and are taken out of net_from_others
+const HOSTED = (process.env.HOSTED_OWNERS || '3Ga7z16ntwpMmr7pqZhWAnHpajUbbaeJB9etYnTmKH43').split(',').filter(Boolean);
 const ROWS = 'platform-tx.jsonl', OUT = 'day-cap.json', LEDGER = 'day-caps.jsonl'; // LEDGER: each past day's base cap and our result
 const SHARE = +(process.env.CAP_SHARE || 0.5), RULE = process.env.CAP_RULE || 'net_from_others';
 export const RULES = {
-  net_from_others: (d) => d.feesAll + d.vault + d.ourNet, // the platform's result on every user but us
+  net_from_others: (d) => d.feesAll + d.vault + d.ourNet - (d.feesHosted || 0) - (d.vaultHosted || 0), // the platform's result on every user but us and the hosted accounts
   fees_all: (d) => d.feesAll,                             // every fee, ours included
   net_incl_us: (d) => d.feesAll + d.vault,                // the platform's result, us included
   fees_others: (d) => d.feesAll - d.feesOurs,             // the fees of the other users
@@ -51,19 +54,20 @@ export function rowOf(sig, tx) {
   for (const [s, list] of [[-1, tx.meta.preTokenBalances], [1, tx.meta.postTokenBalances]])
     for (const b of list || []) if (b.mint === USDC) bal[b.owner] = (bal[b.owner] || 0) + s * (b.uiTokenAmount.uiAmount || 0);
   const fee = bal[FEE] || 0, claim = (tx.meta.logMessages || []).some((l) => /Instruction: .*Claim/.test(l));
-  return { sig, t: tx.blockTime, kind: fee > 0 ? 'trade' : claim ? 'claim' : 'other', mm: r2(bal[MM] || 0), fee: +fee.toFixed(6), ours: US in bal };
+  return { sig, t: tx.blockTime, kind: fee > 0 ? 'trade' : claim ? 'claim' : 'other', mm: r2(bal[MM] || 0), fee: +fee.toFixed(6), ours: US in bal, hosted: HOSTED.some((h) => h in bal) };
 }
 
 // a UTC day's sums from the rows
 export function summarize(rows, day) {
-  const d = { day, feesAll: 0, feesOurs: 0, vault: 0, vaultOther: 0, trades: 0, ourTrades: 0, claims: 0, other: 0 };
+  const d = { day, feesAll: 0, feesOurs: 0, vault: 0, vaultOther: 0, feesHosted: 0, vaultHosted: 0, trades: 0, ourTrades: 0, hostedTrades: 0, claims: 0, other: 0 };
   for (const x of rows) {
     if (x.kind === 'start' || dayOf(x.t) !== day) continue;
     if (x.kind === 'trade') { d.trades++; d.feesAll += x.fee; d.vault += x.mm; if (x.ours) { d.ourTrades++; d.feesOurs += x.fee; } }
     else if (x.kind === 'claim') { d.claims++; d.vault += x.mm; }
     else { d.other++; d.vaultOther += x.mm; }
+    if (x.hosted && x.kind !== 'other') { d.vaultHosted += x.mm; d.feesHosted += x.fee; if (x.kind === 'trade') d.hostedTrades++; }
   }
-  for (const k of ['feesAll', 'feesOurs', 'vault', 'vaultOther']) d[k] = r2(d[k]);
+  for (const k of ['feesAll', 'feesOurs', 'vault', 'vaultOther', 'feesHosted', 'vaultHosted']) d[k] = r2(d[k]);
   return d;
 }
 
@@ -137,6 +141,10 @@ function selftest() {
   console.assert(g('net_from_others') === 17.3 && g('fees_all') === 0.3 && g('net_incl_us') === 7.3 && g('fees_others') === 0.2, 'rules');
   // the vault's 24 h to 2026-11-07 00:18 UTC: fees 469.51, vault -847.16, us +900.12 -> 522.47 from the others
   console.assert(r2(RULES.net_from_others({ feesAll: 469.51, vault: -847.16, ourNet: 900.12 })) === 522.47, 'net_from_others on the 11-07 read');
+  // a hosted account's trade (vault -4, fee 0.3) and payout (vault -2) leave the others' result, its 'other' rows never count
+  const h = summarize([row('trade', -1, 0.2, false), { ...row('trade', -4, 0.3, false), hosted: true }, { ...row('claim', -2, 0, false), hosted: true }, { ...row('other', 50, 0, false), hosted: true }], '2026-11-06');
+  console.assert(h.feesHosted === 0.3 && h.vaultHosted === -6 && h.hostedTrades === 1 && r2(RULES.net_from_others({ ...h, ourNet: 0 })) === -0.8, 'hosted', h);
+  console.assert(rowOf('s', { blockTime: t, meta: { logMessages: [], preTokenBalances: [], postTokenBalances: [{ mint: USDC, owner: HOSTED[0], uiTokenAmount: { uiAmount: 1 } }, { mint: USDC, owner: FEE, uiTokenAmount: { uiAmount: 0.1 } }] } }).hosted === true, 'rowOf hosted');
   // the owner's example: caps of 250, day 1 makes 100, day 2 makes 150, day 3 may make 750 - 100 - 150 = 500
   console.assert(capWithCarry(250, [{ base: 250, ourNet: 100 }, { base: 250, ourNet: 150 }]) === 500, 'carry');
   console.assert(capWithCarry(250, [{ base: 250, ourNet: 900 }]) === 0, 'a day far over its cap leaves 0, not a negative cap');
