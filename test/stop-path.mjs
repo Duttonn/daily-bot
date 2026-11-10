@@ -416,8 +416,8 @@ const buysOf = (r) => r.frames.filter((f) => f.side === 'buy'), posOf = (r) => r
     b.length === 3 && b[2].t - b[1].t >= 10000 && addRej.out.includes('[ADD REJECTED]') && Math.abs(posOf(addRej)?.sharesBought - sh[0] - sh[2]) < 1e-6); }
 check(`D1: by default the bot makes no add (${buysOf(addOff).length} buys)`, buysOf(addOff).length === 1);
 { const sig = Number((firstHb(calmOff).match(/sigmaM=([\d.]+)/) || [])[1]);
-  check(`O5: by default no entry while sigmaM >= 2 (first heartbeat sigmaM ${sig}, ${buysOf(calmOff).length} buys; ${buysOf(addOff).length} with the gate at 12)`,
-    sig >= 2 && buysOf(calmOff).length === 0 && buysOf(addOff).length >= 1 && calmOff.out.includes('only below sigmaM 2\n') && addOff.out.includes('only below sigmaM 12\n')); }
+  check(`O5: by default no entry while sigmaM >= 1.5 (first heartbeat sigmaM ${sig}, ${buysOf(calmOff).length} buys; ${buysOf(addOff).length} with the gate at 12)`,
+    sig >= 2 && buysOf(calmOff).length === 0 && buysOf(addOff).length >= 1 && calmOff.out.includes('only below sigmaM 1.5\n') && addOff.out.includes('only below sigmaM 12\n')); }
 // H4 trial: the buy limit is ask 0.52 + 15 c capped at the 2.5 % edge, the size still from the old ask + 2 c limit (53 shares for 30 USD)
 { const on = buysOf(addOn)[0], off = buysOf(addOff)[0];
   check(`H4: limit ${Number(on?.limit) / 1e6} over the old 0.54 with the old size ${Number(on?.maxShares) / 1e6}; BUY_LIMIT_OVER_ASK 0.02 gives ${Number(off?.limit) / 1e6}`,

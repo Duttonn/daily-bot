@@ -128,7 +128,9 @@ const CONFIG = {
   // new entries only while sigmaM ($/sqrt(s) over 10 min) is below this. Was 12 (only extreme volatility blocked). Owner's O5, 2026-11-09:
   // since the venue's quotes changed on 11-07 06:00 UTC (half-spread 2 -> 4 c), the bot made +339 USD live in calm markets (43 trades)
   // and -196 in agitated ones (57); no engine rule tried for sigmaM >= 2 won on held-out data. CALM_VOL_THRESHOLD overrides it.
-  calmVolThreshold: Number(process.env.CALM_VOL_THRESHOLD ?? 2.0),
+  // 2.0 -> 1.5 on 2026-11-10 (owner's O10): the venue prices as if sigma never went below about 2, so the mismatch is clear near 1 and
+  // gone near 2; the first 7 trades at sigmaM 1.70-1.98 made -15.5 USD.
+  calmVolThreshold: Number(process.env.CALM_VOL_THRESHOLD ?? 1.5),
   minSigmaFloor: 2.20,     // Volatility floor to prevent underestimating variance on 5m BTC
   cModel: 1.0,             // S6 forward model scaling factor
   minEdgeMargin: 0.04,     // Edge floor: q - (ask + fee) >= 0.04
